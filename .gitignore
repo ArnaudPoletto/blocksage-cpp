@@ -1,0 +1,5 @@
+vcpkg/*
+data/*
+build/*
+bin/*
+.vscode/*
