@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
+#include "opengl_headers.h"
 #include <string>
 #include <cmath>
 
@@ -11,6 +11,7 @@ public:
     ~Window();
 
     bool initialize();
+    void cleanup();
 
     bool shouldClose() const;
     void swapBuffers();
@@ -21,7 +22,6 @@ public:
     GLFWwindow *getGLFWWindow() const;
 
     bool isKeyPressed(int key) const;
-
     void getCursorPosition(double &x, double &y) const;
     void setCursorPosition(double x, double y);
     void enableCursorCapture(bool enable);
@@ -37,6 +37,6 @@ private:
     double lastMouseY;
     bool firstMouse;
 
-    static void framebufferSizeCallback(GLFWwindow *window, int width, int height);
     static void errorCallback(int error, const char *description);
+    static void framebufferSizeCallback(GLFWwindow *window, int width, int height);
 };

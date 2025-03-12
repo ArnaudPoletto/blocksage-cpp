@@ -14,16 +14,15 @@ namespace fs = std::filesystem;
 class RegionReader
 {
 public:
-    static std::vector<uint16_t> processSection(const std::vector<uint64_t> &data, int bitLength);
-
-    // static std::tuple<int, int, int, int, ChunkData> processChunk(const NBTData &nbtData, const std::unordered_map<std::string, int> &blockIdDict);
-
-    static std::tuple<int, int, int, int, ChunkData> readAndProcessChunk(const ByteBuffer &chunkDataStream, const std::unordered_map<std::string, int> &blockIdDict);
-
-    static ByteBuffer getChunkDataStream(const std::vector<uint32_t> &locations, int chunkIdx, const std::vector<char> &regionData);
-
     static Region getRegion(
         const std::filesystem::path &filePath,
-        const std::unordered_map<std::string, int> &blockIdDict
-    );
+        const std::unordered_map<std::string, uint16_t> &blockIdDict);
+
+private:
+    static std::vector<char> getRegionData(const std::filesystem::path &filePath);
+    static std::vector<uint32_t> getChunkLocationData(const std::vector<char> &regionData);
+    static std::vector<uint16_t> processSection(const std::vector<uint64_t> &data, int bitLength);
+    static ByteBuffer getChunkDataStream(const std::vector<uint32_t> &locations, int chunkIdx, const std::vector<char> &regionData);
+    static std::tuple<int, int, int, int, ChunkData> readAndProcessChunk(const ByteBuffer &chunkDataStream, const std::unordered_map<std::string, uint16_t> &blockIdDict);
+    static std::tuple<int, int> processChunks(const std::vector<uint32_t> &chunkLocationData, const std::vector<char> &regionData, const std::unordered_map<std::string, uint16_t> &blockIdDict, RegionData &data);
 };

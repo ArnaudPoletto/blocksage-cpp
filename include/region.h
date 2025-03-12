@@ -11,8 +11,12 @@ public:
     ~Region();
 
     const RegionData &getDataByRegion() const;
+    const uint16_t getBlockAt(int x, int y, int z) const;
     int getRegionXWorld() const;
     int getRegionZWorld() const;
+    int getSizeX() const;
+    int getSizeY() const;
+    int getSizeZ() const;
 private:
     RegionData data;
     int regionXWorld;
