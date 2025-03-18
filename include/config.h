@@ -4,11 +4,11 @@
 
 using BlockId = uint16_t;
 using SectionLineData = std::vector<BlockId>;          // Z dimension within a section
-using SectionPlaneData = std::vector<SectionLineData>;     // Y dimension within a section
-using SectionData = std::vector<SectionPlaneData>;         // X dimension within a section
-using ChunkData = std::vector<SectionData>;        // Sections in a chunk
+using SectionPlaneData = std::vector<SectionLineData>; // Y dimension within a section
+using SectionData = std::vector<SectionPlaneData>;     // X dimension within a section
+using ChunkData = std::vector<SectionData>;            // Sections in a chunk
 using ChunkLineData = std::vector<ChunkData>;          // Chunk in region
-using RegionData = std::vector<ChunkLineData>;             // Final 3D region
+using RegionData = std::vector<ChunkLineData>;         // Final 3D region
 
 const int N_CHUNKS_PER_REGION_XZ = 32;
 const int CHUNK_SIZE_Y = 384;

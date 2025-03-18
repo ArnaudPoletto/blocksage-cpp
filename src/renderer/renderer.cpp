@@ -1,7 +1,8 @@
-#include "renderer.h"
+#include "renderer/renderer.h"
 #include "window.h"
 #include "region.h"
 #include "config.h"
+#include "shader_sources.h"
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -19,25 +20,47 @@
  ****
  ******/
 
+const glm::vec3 initialCameraPos = glm::vec3(0.0f, 0.0f, 0.0f);
+const glm::vec3 initialCameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+const glm::vec3 initialCameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+const float initialYaw = -90.0f;
+const float initialPitch = 0.0f;
+const float initialDeveloperModeActive = false;
+const glm::vec3 initialLightDirection = glm::vec3(0.2f, 1.0f, 0.7f);
+
 Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict, std::vector<uint16_t> noRenderBlockIds)
-    : cameraPos(glm::vec3(0.0f, 0.0f, 0.0f)),
-      cameraFront(glm::vec3(0.0f, 0.0f, -1.0f)),
-      cameraUp(glm::vec3(0.0f, 1.0f, 0.0f)),
-      yaw(-90.0f),
-      pitch(0.0f),
-      moveSpeed(5.0f),
-      moveSpeedIncreaseFactor(5.0f),
-      mouseSensitivity(0.1f),
-      isRunning(true),
-      developerModeActive(false),
-      deltaTime(0.0f),
-      lastFrameTime(0.0f),
-      region(nullptr),
+    : cameraPos(initialCameraPos),
+      cameraFront(initialCameraFront),
+      cameraUp(initialCameraUp),
+      yaw(initialYaw),
+      pitch(initialPitch),
+      developerModeActive(initialDeveloperModeActive),
+      lightDirection(glm::normalize(initialLightDirection)),
       blockColorDict(blockColorDict),
       noRenderBlockIds(noRenderBlockIds),
-      lightDirection(glm::normalize(glm::vec3(0.2f, 1.0f, 0.7f)))
+      stopThreads(false),
+      isRunning(true),
+      lastFrameTime(0.0f),
+      region(nullptr),
+      inputHandler(cameraPos, cameraFront, cameraRight, cameraUp, yaw, pitch, isRunning, developerModeActive, [this]()
+                   { this->updateCameraVectors(); })
 {
+
     updateCameraVectors();
+
+    nThreads = std::min(8, static_cast<int>(std::thread::hardware_concurrency()));
+    if (nThreads < 1)
+    {
+        nThreads = 1;
+    }
+
+    threads.resize(nThreads);
+    for (int i = 0; i < nThreads; ++i)
+    {
+        threads[i] = std::thread(&Renderer::workerFunction, this);
+    }
+
+    std::cout << "Started " << nThreads << " worker threads for section processing" << std::endl;
 }
 
 Renderer::~Renderer()
@@ -97,148 +120,6 @@ bool Renderer::initialize()
  *** Shaders
  ****
  ******/
-
-const char *baseVertexShaderSource = R"(
-    #version 460 core
-    layout (location = 0) in vec3 aPos;
-    layout (location = 1) in vec3 aColor;
-    
-    out vec3 vertexColor;
-    
-    uniform mat4 mvpMatrix;
-    
-    void main() {
-        gl_Position = mvpMatrix * vec4(aPos, 1.0);
-        vertexColor = aColor;
-    }
-    )";
-
-const char *axesFragmentShaderSource = R"(
-    #version 460 core
-    in vec3 vertexColor;
-    out vec4 FragColor;
-    
-    void main() {
-        FragColor = vec4(vertexColor, 1.0);
-    }
-    )";
-
-// const char *cubeVertexShaderSource = R"(
-// #version 460 core
-// layout (location = 0) in vec3 aPos;
-// layout (location = 1) in vec3 aColor;
-
-// out vec3 vertexColor;
-
-// uniform mat4 mvpMatrix;
-
-// void main() {
-//     gl_Position = mvpMatrix * vec4(aPos, 1.0);
-//     vertexColor = aColor;
-// }
-// )";
-
-// const char *cubeVertexShaderSource = R"(
-// #version 460 core
-// layout (location = 0) in vec3 aPos;
-// layout (location = 1) in vec3 aColor;
-// layout (location = 2) in vec3 instancePos;
-
-// out vec3 vertexColor;
-
-// uniform mat4 viewProjectionMatrix;
-
-// void main() {
-//     mat4 model = mat4(1.0);
-//     model[3] = vec4(instancePos, 1.0);
-
-//     gl_Position = viewProjectionMatrix * model * vec4(aPos, 1.0);
-//     vertexColor = aColor;
-// }
-// )";
-
-const char *cubeVertexShaderSource = R"(
-    #version 460 core
-    layout (location = 0) in vec3 aPos;
-    layout (location = 1) in vec3 aColor;
-    layout (location = 2) in vec3 instancePos;
-    layout (location = 3) in vec3 aNormal;  // Add normal attribute
-    
-    out vec3 vertexColor;
-    out vec3 fragNormal;   // Pass normal to fragment shader
-    out vec3 fragPos;      // Pass fragment position for lighting calculations
-    
-    uniform mat4 viewProjectionMatrix;
-    
-    void main() {
-        mat4 model = mat4(1.0);
-        model[3] = vec4(instancePos, 1.0);
-        
-        // Calculate world position
-        vec4 worldPos = model * vec4(aPos, 1.0);
-        gl_Position = viewProjectionMatrix * worldPos;
-        
-        // Pass values to fragment shader
-        vertexColor = aColor;
-        fragNormal = mat3(model) * aNormal;  // Transform normal to world space
-        fragPos = worldPos.xyz;
-    }
-    )";
-
-// const char *cubeFragmentShaderSource = R"(
-//     #version 460 core
-//     in vec3 vertexColor;
-//     out vec4 FragColor;
-
-//     uniform vec3 colorOverride;
-//     uniform bool useColorOverride;
-
-//     void main() {
-//         if (useColorOverride) {
-//             FragColor = vec4(colorOverride, 1.0);
-//         } else {
-//             FragColor = vec4(vertexColor, 1.0);
-//         }
-//     }
-//     )";
-
-const char *cubeFragmentShaderSource = R"(
-    #version 460 core
-    in vec3 vertexColor;
-    in vec3 fragNormal;   // Receive normal from vertex shader
-    in vec3 fragPos;      // Receive fragment position
-    
-    out vec4 FragColor;
-    
-    uniform vec3 colorOverride;
-    uniform bool useColorOverride;
-    uniform vec3 lightDir;    // Direction of the light
-    uniform vec3 viewPos;     // Camera position for optional specular highlights
-    
-    void main() {
-        // Normalize the incoming normal
-        vec3 normal = normalize(fragNormal);
-        
-        // Base color (either from vertex color or override)
-        vec3 baseColor = useColorOverride ? colorOverride : vertexColor;
-        
-        // Calculate lighting
-        // 1. Ambient component (constant light)
-        float ambientStrength = 0.3;
-        vec3 ambient = ambientStrength * baseColor;
-        
-        // 2. Diffuse component (directional light)
-        vec3 lightDirection = normalize(lightDir);
-        float diff = max(dot(normal, lightDirection), 0.0);
-        vec3 diffuse = diff * baseColor;
-        
-        // Combine lighting components
-        vec3 finalColor = ambient + diffuse;
-        
-        // Output the final color
-        FragColor = vec4(finalColor, 1.0);
-    }
-    )";
 
 GLuint Renderer::compileShader(GLenum shaderType, const char *source)
 {
@@ -328,8 +209,6 @@ bool Renderer::setupShaders()
     }
     axesMVPMatrixLoc = glGetUniformLocation(baseShaderProgram, "mvpMatrix");
 
-    // Current section bounds shader
-
     // Cube shader
     cubeShaderProgram = createShaderProgram(cubeVertexShaderSource, cubeFragmentShaderSource);
     if (cubeShaderProgram == 0)
@@ -341,7 +220,6 @@ bool Renderer::setupShaders()
     cubeColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "colorOverride");
     cubeUseColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "useColorOverride");
     cubeLightDirLoc = glGetUniformLocation(cubeShaderProgram, "lightDir");
-    // cubeViewPosLoc = glGetUniformLocation(cubeShaderProgram, "viewPos");
     if (cubeVPMatrixLoc == -1 || cubeColorOverrideLoc == -1 || cubeUseColorOverrideLoc == -1 || cubeLightDirLoc == -1)
     {
         std::cerr << "Uniforms not found in cube shader program" << std::endl;
@@ -488,62 +366,75 @@ bool Renderer::setupCubeGeometry()
 {
     std::vector<float> vertices = {
         // Position          // Color           // Normal
-        // Front face (Z+)
+        // Front face (Z+) - Face 4
         0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Bottom-left
         1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Bottom-right
         1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Top-right
         0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Top-left
 
-        // Back face (Z-)
+        // Back face (Z-) - Face 5
         0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Bottom-left
         1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Bottom-right
         1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Top-right
         0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Top-left
 
-        // Left face (X-)
+        // Left face (X-) - Face 1
         0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Bottom-back
         0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Bottom-front
         0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Top-front
         0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Top-back
 
-        // Right face (X+)
+        // Right face (X+) - Face 0
         1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Bottom-front
         1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Bottom-back
         1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Top-back
         1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Top-front
 
-        // Bottom face (Y-)
+        // Bottom face (Y-) - Face 3
         0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Back-left
         1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Back-right
         1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Front-right
         0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Front-left
 
-        // Top face (Y+)
+        // Top face (Y+) - Face 2
         0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // Front-left
         1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // Front-right
         1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // Back-right
         0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f  // Back-left
     };
 
-    std::vector<unsigned int> indices = {
-        // Front face
-        0, 1, 2,
-        2, 3, 0,
-        // Back face
-        4, 5, 6,
-        6, 7, 4,
-        // Left face
-        8, 9, 10,
-        10, 11, 8,
-        // Right face
-        12, 13, 14,
-        14, 15, 12,
-        // Bottom face
-        16, 17, 18,
-        18, 19, 16,
-        // Top face
-        20, 21, 22,
-        22, 23, 20};
+    // Define indices for each face separately
+    std::vector<unsigned int> faceIndices[6] = {
+        // Face 0: +X (Right)
+        {12, 13, 14, 14, 15, 12},
+
+        // Face 1: -X (Left)
+        {8, 9, 10, 10, 11, 8},
+
+        // Face 2: +Y (Top)
+        {20, 21, 22, 22, 23, 20},
+
+        // Face 3: -Y (Bottom)
+        {16, 17, 18, 18, 19, 16},
+
+        // Face 4: +Z (Front)
+        {0, 1, 2, 2, 3, 0},
+
+        // Face 5: -Z (Back)
+        {4, 5, 6, 6, 7, 4}};
+
+    // Store the indices for each face in the class
+    for (int i = 0; i < 6; i++)
+    {
+        cubeFaceIndices[i] = faceIndices[i];
+    }
+
+    // Combined indices for drawing the full cube
+    std::vector<unsigned int> indices;
+    for (int i = 0; i < 6; i++)
+    {
+        indices.insert(indices.end(), faceIndices[i].begin(), faceIndices[i].end());
+    }
 
     cubeVertexCount = indices.size();
 
@@ -552,6 +443,7 @@ bool Renderer::setupCubeGeometry()
     glGenBuffers(1, &cubeVBO);
     glGenBuffers(1, &cubeEBO);
     glGenBuffers(1, &instanceVBO);
+    glGenBuffers(1, &faceFlagsVBO);
 
     // Bind VAO
     glBindVertexArray(cubeVAO);
@@ -683,105 +575,6 @@ void Renderer::drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::
     glUseProgram(0);
 }
 
-// void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance)
-// {
-//     if (!region)
-//     {
-//         return;
-//     }
-
-//     // Group blocks by ID
-//     std::unordered_map<uint16_t, std::vector<glm::vec3>> blockGroups;
-
-//     // Collect visible blocks
-//     glm::vec3 sectionCameraPos = cameraPos;
-//     sectionCameraPos.x = floor(sectionCameraPos.x / 16) * 16;
-//     sectionCameraPos.y = floor(sectionCameraPos.y / 16) * 16;
-//     sectionCameraPos.z = floor(sectionCameraPos.z / 16) * 16;
-//     int startX = std::max(0, std::min(region->getSizeX() - 16, (int)sectionCameraPos.x - sectionViewDistance * 16));
-//     int startY = std::max(0, std::min(region->getSizeY() - 16, (int)sectionCameraPos.y - sectionViewDistance * 16));
-//     int startZ = std::max(0, std::min(region->getSizeZ() - 16, (int)sectionCameraPos.z - sectionViewDistance * 16));
-//     int endX = std::max(0, std::min(region->getSizeX() - 16, (int)sectionCameraPos.x + sectionViewDistance * 16));
-//     int endY = std::max(0, std::min(region->getSizeY() - 16, (int)sectionCameraPos.y + sectionViewDistance * 16));
-//     int endZ = std::max(0, std::min(region->getSizeZ() - 16, (int)sectionCameraPos.z + sectionViewDistance * 16));
-
-//     // Collect positions for each block type
-//     for (int x = startX; x < endX; x++)
-//     {
-//         for (int y = startY; y < endY; y++)
-//         {
-//             for (int z = startZ; z < endZ; z++)
-//             {
-//                 const uint16_t blockId = region->getBlockAt(x, y, z);
-//                 // Skip air blocks
-//                 if (blockId == 0xFFFF)
-//                 {
-//                     continue;
-//                 }
-
-//                 // Skip non-renderable blocks
-//                 if (std::find(noRenderBlockIds.begin(), noRenderBlockIds.end(), blockId) != noRenderBlockIds.end())
-//                 {
-//                     continue;
-//                 }
-
-//                 blockGroups[blockId].push_back(glm::vec3(x, y, z));
-//             }
-//         }
-//     }
-
-//     // Now render each block type in a single batch
-//     glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
-//     glUseProgram(cubeShaderProgram);
-
-//     // Set combined view-projection matrix
-//     glUniformMatrix4fv(cubeVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(viewProjectionMatrix));
-
-//     // Set lighting uniforms
-//     glUniform3fv(cubeLightDirLoc, 1, glm::value_ptr(lightDirection));
-//     //glUniform3fv(cubeViewPosLoc, 1, glm::value_ptr(cameraPos));
-
-//     // Bind cube VAO
-//     glBindVertexArray(cubeVAO);
-
-//     // Draw each block type in one batch
-//     for (const auto &[blockId, positions] : blockGroups)
-//     {
-//         // Set block color
-//         glm::vec3 color;
-//         auto it = blockColorDict.find(blockId);
-//         if (it != blockColorDict.end())
-//         {
-//             color = it->second;
-//             color = color / 255.0f;
-//         }
-//         else
-//         {
-//             color = glm::vec3(0.0f, 0.0f, 0.0f);
-//         }
-//         glUniform3fv(cubeColorOverrideLoc, 1, glm::value_ptr(color));
-//         glUniform1i(cubeUseColorOverrideLoc, 1);
-
-//         // Update instance buffer with all positions for this block type
-//         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-//         glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STREAM_DRAW);
-
-//         // Draw all instances in one call
-//         glDrawElementsInstanced(GL_TRIANGLES, cubeVertexCount, GL_UNSIGNED_INT, 0, positions.size());
-
-//         // Check for errors
-//         GLenum err = glGetError();
-//         if (err != GL_NO_ERROR)
-//         {
-//             std::cerr << "OpenGL error after drawing: " << err << std::endl;
-//         }
-//     }
-
-//     // Cleanup
-//     glBindVertexArray(0);
-//     glUseProgram(0);
-// }
-
 void Renderer::processSection(int sx, int sy, int sz, const std::string &sectionKey)
 {
     // Create new cache entry for this section
@@ -803,12 +596,25 @@ void Renderer::processSection(int sx, int sy, int sz, const std::string &section
         return true;
     };
 
+    auto blockExists = [this, isRenderableBlock](int x, int y, int z) -> bool
+    {
+        bool outOfBounds = x < 0 || y < 0 || z < 0 || x >= region->getSizeX() || y >= region->getSizeY() || z >= region->getSizeZ();
+        if (outOfBounds)
+        {
+            return false;
+        }
+
+        return isRenderableBlock(region->getBlockAt(x, y, z));
+    };
+
     int sectionStartX = sx * 16;
     int sectionStartY = sy * 16;
     int sectionStartZ = sz * 16;
     int sectionEndX = std::min((sx + 1) * 16, region->getSizeX());
     int sectionEndY = std::min((sy + 1) * 16, region->getSizeY());
     int sectionEndZ = std::min((sz + 1) * 16, region->getSizeZ());
+
+    std::unordered_map<uint16_t, std::vector<BlockFace>> blockFaces;
     for (int x = sectionStartX; x < sectionEndX; x++)
     {
         for (int y = sectionStartY; y < sectionEndY; y++)
@@ -824,54 +630,46 @@ void Renderer::processSection(int sx, int sy, int sz, const std::string &section
                 }
 
                 // Check if block is visible and skip non-visible blocks
-                bool visible = false;
-                if (x == 0 || !isRenderableBlock(region->getBlockAt(x - 1, y, z)))
+                if (!blockExists(x + 1, y, z))
                 {
-                    visible = true;
+                    blockFaces[blockId].push_back({glm::vec3(x, y, z), 0});
                 }
-                else if (x == region->getSizeX() - 1 || !isRenderableBlock(region->getBlockAt(x + 1, y, z)))
+                if (!blockExists(x - 1, y, z))
                 {
-                    visible = true;
+                    blockFaces[blockId].push_back({glm::vec3(x, y, z), 1});
                 }
-                else if (y == 0 || !isRenderableBlock(region->getBlockAt(x, y - 1, z)))
+                if (!blockExists(x, y + 1, z))
                 {
-                    visible = true;
+                    blockFaces[blockId].push_back({glm::vec3(x, y, z), 2});
                 }
-                else if (y == region->getSizeY() - 1 || !isRenderableBlock(region->getBlockAt(x, y + 1, z)))
+                if (!blockExists(x, y - 1, z))
                 {
-                    visible = true;
+                    blockFaces[blockId].push_back({glm::vec3(x, y, z), 3});
                 }
-                else if (z == 0 || !isRenderableBlock(region->getBlockAt(x, y, z - 1)))
+                if (!blockExists(x, y, z + 1))
                 {
-                    visible = true;
+                    blockFaces[blockId].push_back({glm::vec3(x, y, z), 4});
                 }
-                else if (z == region->getSizeZ() - 1 || !isRenderableBlock(region->getBlockAt(x, y, z + 1)))
+                if (!blockExists(x, y, z - 1))
                 {
-                    visible = true;
+                    blockFaces[blockId].push_back({glm::vec3(x, y, z), 5});
                 }
-                
-                if (!visible)
-                {
-                    continue;
-                }
-
-                // Add block to the appropriate group
-                newCache.blockGroups[blockId].push_back(glm::vec3(x, y, z));
             }
         }
     }
 
     // Update cache
+    newCache.blockFaces = blockFaces;
     sectionCache[sectionKey] = newCache;
 }
 
 void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &viewProjectionMatrix)
 {
-    const auto &blockGroups = sectionCache[sectionKey].blockGroups;
-    for (const auto &[blockId, positions] : blockGroups)
+    const auto &blockFaces = sectionCache[sectionKey].blockFaces;
+    for (const auto &[blockId, faces] : blockFaces)
     {
         // Skip empty groups
-        if (positions.empty())
+        if (faces.empty())
         {
             continue;
         }
@@ -890,12 +688,27 @@ void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &vie
         glUniform3fv(cubeColorOverrideLoc, 1, glm::value_ptr(color));
         glUniform1i(cubeUseColorOverrideLoc, 1);
 
-        // Update instance buffer with positions for this block type
-        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-        glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STREAM_DRAW);
+        // Group faces by face type for efficient rendering
+        // Organize positions by face type
+        std::unordered_map<uint8_t, std::vector<glm::vec3>> facePositions;
+        for (const auto &face : faces)
+        {
+            facePositions[face.face].push_back(face.position);
+        }
 
-        // Draw all instances in one call
-        glDrawElementsInstanced(GL_TRIANGLES, cubeVertexCount, GL_UNSIGNED_INT, 0, positions.size());
+        // Render each face type separately
+        for (const auto &[faceType, positions] : facePositions)
+        {
+            if (positions.empty())
+                continue;
+
+            // Update instance buffer with positions for this face type
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STREAM_DRAW);
+
+            // Draw only the specific face using the face indices
+            glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, (void *)(faceType * 6 * sizeof(unsigned int)), positions.size());
+        }
 
         // Check for errors
         GLenum err = glGetError();
@@ -915,9 +728,9 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
 
     // Get current camera section position
     glm::ivec3 currentSectionPos(
-        floor(cameraPos.x / 16),
-        floor(cameraPos.y / 16),
-        floor(cameraPos.z / 16));
+        floor(cameraPos.x / SECTION_SIZE),
+        floor(cameraPos.y / SECTION_SIZE),
+        floor(cameraPos.z / SECTION_SIZE));
 
     // Check if current camera moved to a new section and mark out of range sections as dirty
     bool cameraMoved = currentSectionPos != lastCameraSectionPos;
@@ -947,12 +760,12 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
     glUniform3fv(cubeLightDirLoc, 1, glm::value_ptr(lightDirection));
     glBindVertexArray(cubeVAO);
 
-    int startX = std::max(0, std::min(region->getSizeX() / 16, currentSectionPos.x - sectionViewDistance));
-    int startY = std::max(0, std::min(region->getSizeY() / 16, currentSectionPos.y - sectionViewDistance));
-    int startZ = std::max(0, std::min(region->getSizeZ() / 16, currentSectionPos.z - sectionViewDistance));
-    int endX = std::max(0, std::min(region->getSizeX() / 16, currentSectionPos.x + sectionViewDistance + 1));
-    int endY = std::max(0, std::min(region->getSizeY() / 16, currentSectionPos.y + sectionViewDistance + 1));
-    int endZ = std::max(0, std::min(region->getSizeZ() / 16, currentSectionPos.z + sectionViewDistance + 1));
+    int startX = std::max(0, std::min(region->getSizeX() / SECTION_SIZE, currentSectionPos.x - sectionViewDistance));
+    int startY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y - sectionViewDistance));
+    int startZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z - sectionViewDistance));
+    int endX = std::max(0, std::min(region->getSizeX() / SECTION_SIZE, currentSectionPos.x + sectionViewDistance + 1));
+    int endY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y + sectionViewDistance + 1));
+    int endZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z + sectionViewDistance + 1));
 
     for (int sx = startX; sx < endX; sx++)
     {
@@ -1016,10 +829,10 @@ void Renderer::startRenderLoop(Window &window)
     {
         // Calculate delta time
         float currentTime = (float)glfwGetTime();
-        deltaTime = currentTime - lastFrameTime;
+        float deltaTime = currentTime - lastFrameTime;
         lastFrameTime = currentTime;
 
-        handleInput(window);
+        handleInput(window, deltaTime);
         renderFrame(window.getWidth(), window.getHeight());
 
         window.swapBuffers();
@@ -1055,96 +868,9 @@ void Renderer::updateCameraVectors()
  ****
  ******/
 
-void Renderer::handleInput(Window &window)
+void Renderer::handleInput(Window &window, float deltaTime)
 {
-    // Calculate movement speed based on whether shift is pressed
-    float speed = moveSpeed;
-    if (window.isKeyPressed(GLFW_KEY_LEFT_SHIFT))
-    {
-        speed *= moveSpeedIncreaseFactor;
-    }
-
-    // Adjust for framerate independence
-    float distance = speed * deltaTime;
-
-    // Forward/backward movement
-    if (window.isKeyPressed(GLFW_KEY_W))
-    {
-        cameraPos += cameraFront * distance;
-    }
-    if (window.isKeyPressed(GLFW_KEY_S))
-    {
-        cameraPos -= cameraFront * distance;
-    }
-
-    // Left/right movement
-    if (window.isKeyPressed(GLFW_KEY_A))
-    {
-        cameraPos -= cameraRight * distance;
-    }
-    if (window.isKeyPressed(GLFW_KEY_D))
-    {
-        cameraPos += cameraRight * distance;
-    }
-
-    // Up/down movement
-    if (window.isKeyPressed(GLFW_KEY_SPACE))
-    {
-        cameraPos += cameraUp * distance;
-    }
-    if (window.isKeyPressed(GLFW_KEY_Q))
-    {
-        cameraPos -= cameraUp * distance;
-    }
-
-    // Developer mode
-    static bool developerKeyPressed = false;
-    if (window.isKeyPressed(GLFW_KEY_H))
-    {
-        if (!developerKeyPressed)
-        {
-            developerKeyPressed = true;
-            developerModeActive = !developerModeActive;
-            std::cout << "Developer mode: " << (developerModeActive ? "enabled" : "disabled") << std::endl;
-        }
-    }
-    else
-    {
-        developerKeyPressed = false;
-    }
-
-    // Exit
-    if (window.isKeyPressed(GLFW_KEY_ESCAPE))
-    {
-        isRunning = false;
-    }
-
-    // Mouse look
-    processMouse(window);
-}
-
-void Renderer::processMouse(Window &window)
-{
-    double dx, dy;
-    window.getMouseDelta(dx, dy);
-
-    dx *= mouseSensitivity;
-    dy *= mouseSensitivity;
-
-    yaw += dx;
-    pitch += dy; // Inverted controls
-
-    // Constrain pitch to avoid gimbal lock
-    if (pitch > 89.0f)
-    {
-        pitch = 89.0f;
-    }
-    if (pitch < -89.0f)
-    {
-        pitch = -89.0f;
-    }
-
-    updateCameraVectors();
+    inputHandler.handleInput(window, deltaTime);
 }
 
 /*****
@@ -1169,4 +895,17 @@ void Renderer::setLookAtPoint(float x, float y, float z)
     glm::vec3 lookAt(x, y, z);
     cameraFront = glm::normalize(lookAt - cameraPos);
     updateCameraVectors();
+}
+
+void Renderer::workerFunction()
+{
+}
+
+void Renderer::queueSectionForProcessing(int sx, int sy, int sz, const std::string &sectionKey)
+{
+}
+
+bool Renderer::isSectionReady(const std::string &sectionKey)
+{
+    return false;
 }

@@ -9,7 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include "window.h"
-#include "renderer.h"
+#include "renderer/renderer.h"
 #include "region_reader.h"
 
 namespace fs = std::filesystem;

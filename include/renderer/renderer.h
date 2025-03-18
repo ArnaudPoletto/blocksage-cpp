@@ -3,11 +3,21 @@
 #include "opengl_headers.h"
 #include "window.h"
 #include "region.h"
+#include "input_handler.h"
 #include <cmath>
 #include <unordered_map>
 #include <vector>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <future>
 
 #define PI 3.14159265359f
+
+struct BlockFace {
+    glm::vec3 position;
+    uint8_t face; // 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
+};
 
 class Renderer
 {
@@ -24,36 +34,6 @@ public:
     void setRegion(Region *region);
 
 private:
-    // Shaders
-    GLuint baseShaderProgram;
-    GLuint axesVAO, axesVBO;
-    int axesVertexCount;
-
-    GLuint currentSectionBoundsVAO, currentSectionBoundsVBO;
-    int currentSectionBoundsVertexCount;
-
-    GLuint cubeShaderProgram;
-    GLuint cubeVAO, cubeVBO, cubeEBO;
-    GLuint instanceVBO;
-    int cubeVertexCount;
-
-    // Camera and movement
-    glm::vec3 cameraPos;
-    glm::vec3 cameraFront;
-    glm::vec3 cameraUp;
-    glm::vec3 cameraRight;
-    float yaw, pitch;
-    float moveSpeed;
-    float moveSpeedIncreaseFactor;
-    float mouseSensitivity;
-    glm::ivec3 lastCameraSectionPos;
-
-    // Rendering
-    bool isRunning;
-    bool developerModeActive;
-    float deltaTime;
-    float lastFrameTime;
-
     // Uniform location cache
     GLint cubeVPMatrixLoc;
     GLint cubeColorOverrideLoc;
@@ -65,25 +45,61 @@ private:
     GLint cubeViewPosLoc;
     glm::vec3 lightDirection;
 
-    // Data
-    Region *region;
-    std::unordered_map<uint16_t, glm::vec3> blockColorDict;
-    std::vector<uint16_t> noRenderBlockIds;
+    // Threading
+    int nThreads;
+    std::condition_variable condition;
+    std::mutex queueMutex;
+    std::mutex cacheMutex;
+    std::queue<std::tuple<int, int, int, std::string>> sectionQueue;
+    std::vector<std::thread> threads;
+    std::atomic<bool> stopThreads;
+
+    std::unordered_map<std::string, std::future<void>> pendingProcessing;
+    std::mutex pendingMutex;
 
     // Section cache
     struct SectionCache {
-        std::unordered_map<uint16_t, std::vector<glm::vec3>> blockGroups;
+        std::unordered_map<uint16_t, std::vector<BlockFace>> blockFaces;
         bool dirty;
+        bool processing;
+
+        SectionCache() : dirty(true), processing(false) {}
     };
     std::unordered_map<std::string, SectionCache> sectionCache;
 
     // Shaders
+    GLuint baseShaderProgram;
+    GLuint axesVAO, axesVBO;
+    int axesVertexCount;
+
+    GLuint currentSectionBoundsVAO, currentSectionBoundsVBO;
+    int currentSectionBoundsVertexCount;
+
+    GLuint cubeShaderProgram;
+    GLuint cubeVAO, cubeVBO, cubeEBO;
+    GLuint instanceVBO;
+    GLuint faceFlagsVBO;
+    int cubeVertexCount;
+
+    std::vector<unsigned int> cubeFaceIndices[6];
+
     GLuint compileShader(GLenum type, const char *source);
     GLuint createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource);
     bool setupShaders();
     bool setupAxesGeometry();
     bool setupCurrentSectionBoundsGeometry();
     bool setupCubeGeometry();
+
+    // Camera and movement
+    glm::vec3 cameraPos;
+    glm::vec3 cameraFront;
+    glm::vec3 cameraUp;
+    glm::vec3 cameraRight;
+    float yaw;
+    float pitch;
+    glm::ivec3 lastCameraSectionPos;
+
+    void updateCameraVectors();
 
     // Drawing
     void drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, float delta = 0.001f);
@@ -93,14 +109,24 @@ private:
     void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 32);
 
     // Rendering
+    bool isRunning;
+    bool developerModeActive;
+    float lastFrameTime;
     void renderFrame(int windowWidth, int windowHeight, float nearPlane = 0.1f, float farPlane = 5000.0f);
 
-    // Camera
-    void updateCameraVectors();
-
     // Input
-    void handleInput(Window &window);
-    void processMouse(Window &window);
+    InputHandler inputHandler;
+    void handleInput(Window &window, float deltaTime);
+
+    // Threading
+    void workerFunction();
+    void queueSectionForProcessing(int sx, int sy, int sz, const std::string& sectionKey);
+    bool isSectionReady(const std::string& sectionKey);
+
+    // Data
+    Region *region;
+    std::unordered_map<uint16_t, glm::vec3> blockColorDict;
+    std::vector<uint16_t> noRenderBlockIds;
 
     // Setters
     void setCameraPosition(float x, float y, float z);
