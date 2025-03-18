@@ -207,7 +207,7 @@ std::tuple<int, int, int, int, ChunkData> RegionReader::readAndProcessChunk(cons
         if (sectionData.type == NBTParser::TagType::TagLongArray)
         {
             int bit_length = std::max(4, int(ceil(log2(palette.size()))));
-            std::vector<uint16_t> flatSectionBlockIndices = processSection(sectionData.longArrayValue, bit_length);
+            flatSectionBlockIndices = processSection(sectionData.longArrayValue, bit_length);
         }
 
         // Convert block indices to block IDs
@@ -224,7 +224,7 @@ std::tuple<int, int, int, int, ChunkData> RegionReader::readAndProcessChunk(cons
 
             if (it != blockIdDict.end())
             {
-                chunkBlocks[sectionYIndex][sy][sz][sx] = it->second;
+                chunkBlocks[sectionYIndex][sx][sy][sz] = it->second;
             }
             else
             {

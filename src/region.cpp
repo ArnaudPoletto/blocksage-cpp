@@ -16,6 +16,11 @@ const RegionData &Region::getDataByRegion() const
     return data;
 }
 
+const SectionData &Region::getSectionAt(int sx, int sy, int sz) const
+{
+    return data[sx][sz][sy];
+}
+
 const uint16_t Region::getBlockAt(int x, int y, int z) const
 {
     int sx = x / SECTION_SIZE;
@@ -26,10 +31,7 @@ const uint16_t Region::getBlockAt(int x, int y, int z) const
     int dy = y % SECTION_SIZE;
     int dz = z % SECTION_SIZE;
 
-    //std::cout << "sx: " << sx << " sy: " << sy << " sz: " << sz << " dx: " << dx << " dy: " << dy << " dz: " << dz << std::endl;
-    //std::cout << data.size() << std::endl;
-
-    return data[sx][sz][sy][dx][dy][dz];
+    return this->getSectionAt(sx, sy, sz)[dx][dy][dz];
 }
 
 int Region::getRegionXWorld() const

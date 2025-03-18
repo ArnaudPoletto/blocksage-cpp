@@ -5,6 +5,7 @@
 #include "region.h"
 #include <cmath>
 #include <unordered_map>
+#include <vector>
 
 #define PI 3.14159265359f
 
@@ -24,13 +25,16 @@ public:
 
 private:
     // Shaders
-    GLuint axesShaderProgram;
+    GLuint baseShaderProgram;
     GLuint axesVAO, axesVBO;
     int axesVertexCount;
 
+    GLuint currentSectionBoundsVAO, currentSectionBoundsVBO;
+    int currentSectionBoundsVertexCount;
+
     GLuint cubeShaderProgram;
     GLuint cubeVAO, cubeVBO, cubeEBO;
-    GLuint instanceVBO; // Stores position of each cube 
+    GLuint instanceVBO;
     int cubeVertexCount;
 
     // Camera and movement
@@ -42,31 +46,54 @@ private:
     float moveSpeed;
     float moveSpeedIncreaseFactor;
     float mouseSensitivity;
+    glm::ivec3 lastCameraSectionPos;
 
     // Rendering
     bool isRunning;
+    bool developerModeActive;
     float deltaTime;
     float lastFrameTime;
+
+    // Uniform location cache
+    GLint cubeVPMatrixLoc;
+    GLint cubeColorOverrideLoc;
+    GLint cubeUseColorOverrideLoc;
+    GLint axesMVPMatrixLoc;
+
+    // Lighting
+    GLint cubeLightDirLoc;
+    GLint cubeViewPosLoc;
+    glm::vec3 lightDirection;
 
     // Data
     Region *region;
     std::unordered_map<uint16_t, glm::vec3> blockColorDict;
     std::vector<uint16_t> noRenderBlockIds;
 
+    // Section cache
+    struct SectionCache {
+        std::unordered_map<uint16_t, std::vector<glm::vec3>> blockGroups;
+        bool dirty;
+    };
+    std::unordered_map<std::string, SectionCache> sectionCache;
+
     // Shaders
     GLuint compileShader(GLenum type, const char *source);
     GLuint createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource);
     bool setupShaders();
     bool setupAxesGeometry();
+    bool setupCurrentSectionBoundsGeometry();
     bool setupCubeGeometry();
 
     // Drawing
     void drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, float delta = 0.001f);
-    void drawCube(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, glm::vec3 position, glm::vec3 color);
-    void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance);
+    void drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix);
+    void processSection(int sx, int sy, int sz, const std::string& sectionKey);
+    void renderSection(const std::string& sectionKey, const glm::mat4& viewProjectionMatrix);
+    void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 32);
 
     // Rendering
-    void renderFrame(int windowWidth, int windowHeight);
+    void renderFrame(int windowWidth, int windowHeight, float nearPlane = 0.1f, float farPlane = 5000.0f);
 
     // Camera
     void updateCameraVectors();
@@ -78,4 +105,9 @@ private:
     // Setters
     void setCameraPosition(float x, float y, float z);
     void setLookAtPoint(float x, float y, float z);
+
+    // Getters
+    std::string getSectionKey(int x, int y, int z) const {
+        return std::to_string(x) + "," + std::to_string(y) + "," + std::to_string(z);
+    }
 };

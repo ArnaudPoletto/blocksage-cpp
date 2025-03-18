@@ -7,6 +7,7 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <sstream>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -25,14 +26,16 @@ Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict
       yaw(-90.0f),
       pitch(0.0f),
       moveSpeed(5.0f),
-      moveSpeedIncreaseFactor(2.0f),
+      moveSpeedIncreaseFactor(5.0f),
       mouseSensitivity(0.1f),
       isRunning(true),
+      developerModeActive(false),
       deltaTime(0.0f),
       lastFrameTime(0.0f),
       region(nullptr),
       blockColorDict(blockColorDict),
-      noRenderBlockIds(noRenderBlockIds)
+      noRenderBlockIds(noRenderBlockIds),
+      lightDirection(glm::normalize(glm::vec3(0.2f, 1.0f, 0.7f)))
 {
     updateCameraVectors();
 }
@@ -42,7 +45,7 @@ Renderer::~Renderer()
     // Clean up axes
     glDeleteVertexArrays(1, &axesVAO);
     glDeleteBuffers(1, &axesVBO);
-    glDeleteProgram(axesShaderProgram);
+    glDeleteProgram(baseShaderProgram);
 
     // Clean up cube
     glDeleteVertexArrays(1, &cubeVAO);
@@ -68,15 +71,21 @@ bool Renderer::initialize()
         return false;
     }
 
-    if (!setupCubeGeometry())
-    {
-        std::cerr << "Failed to set up cube geometry" << std::endl;
-        return false;
-    }
-
     if (!setupAxesGeometry())
     {
         std::cerr << "Failed to set up axes geometry" << std::endl;
+        return false;
+    }
+
+    if (!setupCurrentSectionBoundsGeometry())
+    {
+        std::cerr << "Failed to set up current section bounds geometry" << std::endl;
+        return false;
+    }
+
+    if (!setupCubeGeometry())
+    {
+        std::cerr << "Failed to set up cube geometry" << std::endl;
         return false;
     }
 
@@ -89,7 +98,7 @@ bool Renderer::initialize()
  ****
  ******/
 
-const char *axesVertexShaderSource = R"(
+const char *baseVertexShaderSource = R"(
     #version 460 core
     layout (location = 0) in vec3 aPos;
     layout (location = 1) in vec3 aColor;
@@ -129,39 +138,105 @@ const char *axesFragmentShaderSource = R"(
 // }
 // )";
 
-const char *batchedCubeVertexShaderSource = R"(
-#version 460 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec3 aColor;
-layout (location = 2) in vec3 instancePos;
+// const char *cubeVertexShaderSource = R"(
+// #version 460 core
+// layout (location = 0) in vec3 aPos;
+// layout (location = 1) in vec3 aColor;
+// layout (location = 2) in vec3 instancePos;
 
-out vec3 vertexColor;
+// out vec3 vertexColor;
 
-uniform mat4 viewProjectionMatrix;
+// uniform mat4 viewProjectionMatrix;
 
-void main() {
-    mat4 model = mat4(1.0);
-    model[3] = vec4(instancePos, 1.0);
+// void main() {
+//     mat4 model = mat4(1.0);
+//     model[3] = vec4(instancePos, 1.0);
 
-    gl_Position = viewProjectionMatrix * model * vec4(aPos, 1.0);
-    vertexColor = aColor;
-}
-)";
+//     gl_Position = viewProjectionMatrix * model * vec4(aPos, 1.0);
+//     vertexColor = aColor;
+// }
+// )";
+
+const char *cubeVertexShaderSource = R"(
+    #version 460 core
+    layout (location = 0) in vec3 aPos;
+    layout (location = 1) in vec3 aColor;
+    layout (location = 2) in vec3 instancePos;
+    layout (location = 3) in vec3 aNormal;  // Add normal attribute
+    
+    out vec3 vertexColor;
+    out vec3 fragNormal;   // Pass normal to fragment shader
+    out vec3 fragPos;      // Pass fragment position for lighting calculations
+    
+    uniform mat4 viewProjectionMatrix;
+    
+    void main() {
+        mat4 model = mat4(1.0);
+        model[3] = vec4(instancePos, 1.0);
+        
+        // Calculate world position
+        vec4 worldPos = model * vec4(aPos, 1.0);
+        gl_Position = viewProjectionMatrix * worldPos;
+        
+        // Pass values to fragment shader
+        vertexColor = aColor;
+        fragNormal = mat3(model) * aNormal;  // Transform normal to world space
+        fragPos = worldPos.xyz;
+    }
+    )";
+
+// const char *cubeFragmentShaderSource = R"(
+//     #version 460 core
+//     in vec3 vertexColor;
+//     out vec4 FragColor;
+
+//     uniform vec3 colorOverride;
+//     uniform bool useColorOverride;
+
+//     void main() {
+//         if (useColorOverride) {
+//             FragColor = vec4(colorOverride, 1.0);
+//         } else {
+//             FragColor = vec4(vertexColor, 1.0);
+//         }
+//     }
+//     )";
 
 const char *cubeFragmentShaderSource = R"(
     #version 460 core
     in vec3 vertexColor;
+    in vec3 fragNormal;   // Receive normal from vertex shader
+    in vec3 fragPos;      // Receive fragment position
+    
     out vec4 FragColor;
     
     uniform vec3 colorOverride;
     uniform bool useColorOverride;
+    uniform vec3 lightDir;    // Direction of the light
+    uniform vec3 viewPos;     // Camera position for optional specular highlights
     
     void main() {
-        if (useColorOverride) {
-            FragColor = vec4(colorOverride, 1.0);
-        } else {
-            FragColor = vec4(vertexColor, 1.0);
-        }
+        // Normalize the incoming normal
+        vec3 normal = normalize(fragNormal);
+        
+        // Base color (either from vertex color or override)
+        vec3 baseColor = useColorOverride ? colorOverride : vertexColor;
+        
+        // Calculate lighting
+        // 1. Ambient component (constant light)
+        float ambientStrength = 0.3;
+        vec3 ambient = ambientStrength * baseColor;
+        
+        // 2. Diffuse component (directional light)
+        vec3 lightDirection = normalize(lightDir);
+        float diff = max(dot(normal, lightDirection), 0.0);
+        vec3 diffuse = diff * baseColor;
+        
+        // Combine lighting components
+        vec3 finalColor = ambient + diffuse;
+        
+        // Output the final color
+        FragColor = vec4(finalColor, 1.0);
     }
     )";
 
@@ -244,16 +319,32 @@ GLuint Renderer::createShaderProgram(const char *vertexShaderSource, const char 
 
 bool Renderer::setupShaders()
 {
-    axesShaderProgram = createShaderProgram(axesVertexShaderSource, axesFragmentShaderSource);
-    if (axesShaderProgram == 0)
+    baseShaderProgram = createShaderProgram(baseVertexShaderSource, axesFragmentShaderSource);
+
+    // Axes shader
+    if (baseShaderProgram == 0)
+    {
+        return false;
+    }
+    axesMVPMatrixLoc = glGetUniformLocation(baseShaderProgram, "mvpMatrix");
+
+    // Current section bounds shader
+
+    // Cube shader
+    cubeShaderProgram = createShaderProgram(cubeVertexShaderSource, cubeFragmentShaderSource);
+    if (cubeShaderProgram == 0)
     {
         return false;
     }
 
-    // cubeShaderProgram = createShaderProgram(cubeVertexShaderSource, cubeFragmentShaderSource);
-    cubeShaderProgram = createShaderProgram(batchedCubeVertexShaderSource, cubeFragmentShaderSource);
-    if (cubeShaderProgram == 0)
+    cubeVPMatrixLoc = glGetUniformLocation(cubeShaderProgram, "viewProjectionMatrix");
+    cubeColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "colorOverride");
+    cubeUseColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "useColorOverride");
+    cubeLightDirLoc = glGetUniformLocation(cubeShaderProgram, "lightDir");
+    // cubeViewPosLoc = glGetUniformLocation(cubeShaderProgram, "viewPos");
+    if (cubeVPMatrixLoc == -1 || cubeColorOverrideLoc == -1 || cubeUseColorOverrideLoc == -1 || cubeLightDirLoc == -1)
     {
+        std::cerr << "Uniforms not found in cube shader program" << std::endl;
         return false;
     }
 
@@ -315,48 +406,125 @@ bool Renderer::setupAxesGeometry()
     return true;
 }
 
-bool Renderer::setupCubeGeometry()
+bool Renderer::setupCurrentSectionBoundsGeometry()
 {
-    // Create cube geometry
     std::vector<float> vertices = {
-        // Front face
-        0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, // Bottom-left
-        1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, // Bottom-right
-        1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, // Top-right
-        0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, // Top-left
-
-        // Back face
-        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, // Bottom-left
-        1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, // Bottom-right
-        1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, // Top-right
-        0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, // Top-left
-
-        // Left face
-        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Bottom-back
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, // Bottom-front
-        0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, // Top-front
-        0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Top-back
-
-        // Right face
-        1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, // Bottom-front
-        1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, // Bottom-back
-        1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, // Top-back
-        1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, // Top-front
-
         // Bottom face
-        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, // Back-left
-        1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, // Back-right
-        1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, // Front-right
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, // Front-left
+        0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Bottom-back-left
+        16.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, // Bottom-back-right
+
+        16.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Bottom-back-right
+        16.0f, 0.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Bottom-front-right
+
+        16.0f, 0.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Bottom-front-right
+        0.0f, 0.0f, 16.0f, 1.0f, 1.0f, 1.0f,  // Bottom-front-left
+
+        0.0f, 0.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Bottom-front-left
+        0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Bottom-back-left
 
         // Top face
-        0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, // Front-left
-        1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, // Front-right
-        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, // Back-right
-        0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f  // Back-left
+        0.0f, 16.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Top-back-left
+        16.0f, 16.0f, 0.0f, 1.0f, 1.0f, 1.0f, // Top-back-right
+
+        16.0f, 16.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Top-back-right
+        16.0f, 16.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Top-front-right
+
+        16.0f, 16.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Top-front-right
+        0.0f, 16.0f, 16.0f, 1.0f, 1.0f, 1.0f,  // Top-front-left
+
+        0.0f, 16.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Top-front-left
+        0.0f, 16.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Top-back-left
+
+        // Vertical edges
+        0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Bottom-back-left
+        0.0f, 16.0f, 0.0f, 1.0f, 1.0f, 1.0f, // Top-back-left
+
+        16.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // Bottom-back-right
+        16.0f, 16.0f, 0.0f, 1.0f, 1.0f, 1.0f, // Top-back-right
+
+        16.0f, 0.0f, 16.0f, 1.0f, 1.0f, 1.0f,  // Bottom-front-right
+        16.0f, 16.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Top-front-right
+
+        0.0f, 0.0f, 16.0f, 1.0f, 1.0f, 1.0f, // Bottom-front-left
+        0.0f, 16.0f, 16.0f, 1.0f, 1.0f, 1.0f // Top-front-left
     };
 
-    // Indices for drawing triangles
+    currentSectionBoundsVertexCount = vertices.size() / 6;
+
+    // Create VAO and VBO
+    glGenVertexArrays(1, &currentSectionBoundsVAO);
+    glGenBuffers(1, &currentSectionBoundsVBO);
+
+    // Bind VAO
+    glBindVertexArray(currentSectionBoundsVAO);
+
+    // Bind VBO and upload vertex data
+    glBindBuffer(GL_ARRAY_BUFFER, currentSectionBoundsVBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+
+    // Set vertex attribute pointers
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // Unbind
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    // Check for errors
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR)
+    {
+        std::cerr << "OpenGL error in setupCurrentSectionBoundsGeometry: " << err << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool Renderer::setupCubeGeometry()
+{
+    std::vector<float> vertices = {
+        // Position          // Color           // Normal
+        // Front face (Z+)
+        0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Bottom-left
+        1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Bottom-right
+        1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Top-right
+        0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Top-left
+
+        // Back face (Z-)
+        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Bottom-left
+        1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Bottom-right
+        1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Top-right
+        0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, // Top-left
+
+        // Left face (X-)
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Bottom-back
+        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Bottom-front
+        0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Top-front
+        0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, // Top-back
+
+        // Right face (X+)
+        1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Bottom-front
+        1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Bottom-back
+        1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Top-back
+        1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, // Top-front
+
+        // Bottom face (Y-)
+        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Back-left
+        1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Back-right
+        1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Front-right
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, // Front-left
+
+        // Top face (Y+)
+        0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // Front-left
+        1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // Front-right
+        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // Back-right
+        0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f  // Back-left
+    };
+
     std::vector<unsigned int> indices = {
         // Front face
         0, 1, 2,
@@ -393,11 +561,14 @@ bool Renderer::setupCubeGeometry()
     glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
 
     // Set up vertex attributes from VBO
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *)0);
     glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
+
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *)(6 * sizeof(float)));
+    glEnableVertexAttribArray(3);
 
     // Bind EBO and upload index data
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cubeEBO);
@@ -435,7 +606,7 @@ bool Renderer::setupCubeGeometry()
 
 void Renderer::drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, float delta)
 {
-    glUseProgram(axesShaderProgram);
+    glUseProgram(baseShaderProgram);
 
     // Create model matrix
     glm::vec3 dPosition = glm::vec3(delta, delta, delta);
@@ -444,8 +615,7 @@ void Renderer::drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projection
 
     // Compute MVP matrix
     glm::mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
-    GLint mvpMatrixLocation = glGetUniformLocation(axesShaderProgram, "mvpMatrix");
-    glUniformMatrix4fv(mvpMatrixLocation, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
+    glUniformMatrix4fv(axesMVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
 
     // Enable line width (if supported by the hardware)
     GLfloat originalLineWidth;
@@ -464,35 +634,51 @@ void Renderer::drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projection
     glUseProgram(0);
 }
 
-void Renderer::drawCube(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix,
-                        glm::vec3 position, glm::vec3 color)
+void Renderer::drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix)
 {
-    // Activate shader program
-    glUseProgram(cubeShaderProgram);
+    if (!developerModeActive)
+    {
+        return;
+    }
 
-    // Create model matrix for positioning the cube
+    glUseProgram(baseShaderProgram);
+
+    // Calculate current section coordinates
+    float sx = floor(cameraPos.x / 16) * 16;
+    float sy = floor(cameraPos.y / 16) * 16;
+    float sz = floor(cameraPos.z / 16) * 16;
+
+    // Create model matrix to position the section bounds
     glm::mat4 modelMatrix = glm::mat4(1.0f);
-    modelMatrix = glm::translate(modelMatrix, position);
+    modelMatrix = glm::translate(modelMatrix, glm::vec3(sx, sy, sz));
 
-    // Calculate the MVP matrix
+    // Compute MVP matrix
     glm::mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
+    glUniformMatrix4fv(axesMVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
 
-    // Get uniform locations
-    GLint mvpMatrixLocation = glGetUniformLocation(cubeShaderProgram, "mvpMatrix");
-    GLint colorOverrideLocation = glGetUniformLocation(cubeShaderProgram, "colorOverride");
-    GLint useColorOverrideLocation = glGetUniformLocation(cubeShaderProgram, "useColorOverride");
+    // Enable line width for better visibility
+    GLfloat originalLineWidth;
+    glGetFloatv(GL_LINE_WIDTH, &originalLineWidth);
+    glLineWidth(2.0f);
 
-    // Set uniforms
-    glUniformMatrix4fv(mvpMatrixLocation, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
-    glUniform3fv(colorOverrideLocation, 1, glm::value_ptr(color));
-    glUniform1i(useColorOverrideLocation, 1); // Enable color override
+    // Temporarily disable depth testing for the wireframe to be always visible
+    GLboolean depthTestEnabled;
+    glGetBooleanv(GL_DEPTH_TEST, &depthTestEnabled);
+    if (depthTestEnabled)
+    {
+        glDisable(GL_DEPTH_TEST);
+    }
 
-    // Bind VAO and draw cube
-    glBindVertexArray(cubeVAO);
-    glDrawElements(GL_TRIANGLES, cubeVertexCount, GL_UNSIGNED_INT, 0);
+    // Draw section bounds as lines
+    glBindVertexArray(currentSectionBoundsVAO);
+    glDrawArrays(GL_LINES, 0, currentSectionBoundsVertexCount);
 
-    // Reset state
-    glUniform1i(useColorOverrideLocation, 0); // Disable color override
+    // Restore original state
+    if (depthTestEnabled)
+    {
+        glEnable(GL_DEPTH_TEST);
+    }
+    glLineWidth(originalLineWidth);
     glBindVertexArray(0);
     glUseProgram(0);
 }
@@ -504,8 +690,10 @@ void Renderer::drawCube(const glm::mat4 &viewMatrix, const glm::mat4 &projection
 //         return;
 //     }
 
-//     glm::vec3 defaultColor(0.0f, 0.0f, 0.0f);
+//     // Group blocks by ID
+//     std::unordered_map<uint16_t, std::vector<glm::vec3>> blockGroups;
 
+//     // Collect visible blocks
 //     glm::vec3 sectionCameraPos = cameraPos;
 //     sectionCameraPos.x = floor(sectionCameraPos.x / 16) * 16;
 //     sectionCameraPos.y = floor(sectionCameraPos.y / 16) * 16;
@@ -517,6 +705,7 @@ void Renderer::drawCube(const glm::mat4 &viewMatrix, const glm::mat4 &projection
 //     int endY = std::max(0, std::min(region->getSizeY() - 16, (int)sectionCameraPos.y + sectionViewDistance * 16));
 //     int endZ = std::max(0, std::min(region->getSizeZ() - 16, (int)sectionCameraPos.z + sectionViewDistance * 16));
 
+//     // Collect positions for each block type
 //     for (int x = startX; x < endX; x++)
 //     {
 //         for (int y = startY; y < endY; y++)
@@ -524,118 +713,184 @@ void Renderer::drawCube(const glm::mat4 &viewMatrix, const glm::mat4 &projection
 //             for (int z = startZ; z < endZ; z++)
 //             {
 //                 const uint16_t blockId = region->getBlockAt(x, y, z);
+//                 // Skip air blocks
 //                 if (blockId == 0xFFFF)
 //                 {
 //                     continue;
 //                 }
 
-//                 // Do not render non-renderable blocks
+//                 // Skip non-renderable blocks
 //                 if (std::find(noRenderBlockIds.begin(), noRenderBlockIds.end(), blockId) != noRenderBlockIds.end())
 //                 {
 //                     continue;
 //                 }
 
-//                 // Get color from block color dictionary
-//                 glm::vec3 color;
-//                 auto it = blockColorDict.find(blockId);
-//                 if (it != blockColorDict.end())
-//                 {
-//                     color = it->second;
-//                     color = color / 255.0f;
-//                 }
-//                 else
-//                 {
-//                     color = defaultColor;
-//                 }
-//                 glm::vec3 position(x, y, z);
-//                 drawCube(viewMatrix, projectionMatrix, position, color);
+//                 blockGroups[blockId].push_back(glm::vec3(x, y, z));
 //             }
 //         }
 //     }
+
+//     // Now render each block type in a single batch
+//     glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
+//     glUseProgram(cubeShaderProgram);
+
+//     // Set combined view-projection matrix
+//     glUniformMatrix4fv(cubeVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(viewProjectionMatrix));
+
+//     // Set lighting uniforms
+//     glUniform3fv(cubeLightDirLoc, 1, glm::value_ptr(lightDirection));
+//     //glUniform3fv(cubeViewPosLoc, 1, glm::value_ptr(cameraPos));
+
+//     // Bind cube VAO
+//     glBindVertexArray(cubeVAO);
+
+//     // Draw each block type in one batch
+//     for (const auto &[blockId, positions] : blockGroups)
+//     {
+//         // Set block color
+//         glm::vec3 color;
+//         auto it = blockColorDict.find(blockId);
+//         if (it != blockColorDict.end())
+//         {
+//             color = it->second;
+//             color = color / 255.0f;
+//         }
+//         else
+//         {
+//             color = glm::vec3(0.0f, 0.0f, 0.0f);
+//         }
+//         glUniform3fv(cubeColorOverrideLoc, 1, glm::value_ptr(color));
+//         glUniform1i(cubeUseColorOverrideLoc, 1);
+
+//         // Update instance buffer with all positions for this block type
+//         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+//         glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STREAM_DRAW);
+
+//         // Draw all instances in one call
+//         glDrawElementsInstanced(GL_TRIANGLES, cubeVertexCount, GL_UNSIGNED_INT, 0, positions.size());
+
+//         // Check for errors
+//         GLenum err = glGetError();
+//         if (err != GL_NO_ERROR)
+//         {
+//             std::cerr << "OpenGL error after drawing: " << err << std::endl;
+//         }
+//     }
+
+//     // Cleanup
+//     glBindVertexArray(0);
+//     glUseProgram(0);
 // }
 
-void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance)
+void Renderer::processSection(int sx, int sy, int sz, const std::string &sectionKey)
 {
-    if (!region)
+    // Create new cache entry for this section
+    SectionCache newCache;
+    newCache.dirty = false;
+
+    auto isRenderableBlock = [this](uint16_t blockId) -> bool
     {
-        return;
-    }
-
-    // Group blocks by ID
-    std::unordered_map<uint16_t, std::vector<glm::vec3>> blockGroups;
-
-    // Collect visible blocks
-    glm::vec3 sectionCameraPos = cameraPos;
-    sectionCameraPos.x = floor(sectionCameraPos.x / 16) * 16;
-    sectionCameraPos.y = floor(sectionCameraPos.y / 16) * 16;
-    sectionCameraPos.z = floor(sectionCameraPos.z / 16) * 16;
-    int startX = std::max(0, std::min(region->getSizeX() - 16, (int)sectionCameraPos.x - sectionViewDistance * 16));
-    int startY = std::max(0, std::min(region->getSizeY() - 16, (int)sectionCameraPos.y - sectionViewDistance * 16));
-    int startZ = std::max(0, std::min(region->getSizeZ() - 16, (int)sectionCameraPos.z - sectionViewDistance * 16));
-    int endX = std::max(0, std::min(region->getSizeX() - 16, (int)sectionCameraPos.x + sectionViewDistance * 16));
-    int endY = std::max(0, std::min(region->getSizeY() - 16, (int)sectionCameraPos.y + sectionViewDistance * 16));
-    int endZ = std::max(0, std::min(region->getSizeZ() - 16, (int)sectionCameraPos.z + sectionViewDistance * 16));
-
-    // Collect positions for each block type
-    for (int x = startX; x < endX; x++)
-    {
-        for (int y = startY; y < endY; y++)
+        if (blockId == 0xFFFF)
         {
-            for (int z = startZ; z < endZ; z++)
+            return false;
+        }
+
+        if (std::find(noRenderBlockIds.begin(), noRenderBlockIds.end(), blockId) != noRenderBlockIds.end())
+        {
+            return false;
+        }
+
+        return true;
+    };
+
+    int sectionStartX = sx * 16;
+    int sectionStartY = sy * 16;
+    int sectionStartZ = sz * 16;
+    int sectionEndX = std::min((sx + 1) * 16, region->getSizeX());
+    int sectionEndY = std::min((sy + 1) * 16, region->getSizeY());
+    int sectionEndZ = std::min((sz + 1) * 16, region->getSizeZ());
+    for (int x = sectionStartX; x < sectionEndX; x++)
+    {
+        for (int y = sectionStartY; y < sectionEndY; y++)
+        {
+            for (int z = sectionStartZ; z < sectionEndZ; z++)
             {
                 const uint16_t blockId = region->getBlockAt(x, y, z);
-                // Skip air blocks
-                if (blockId == 0xFFFF)
-                {
-                    continue;
-                }
 
                 // Skip non-renderable blocks
-                if (std::find(noRenderBlockIds.begin(), noRenderBlockIds.end(), blockId) != noRenderBlockIds.end())
+                if (!isRenderableBlock(blockId))
                 {
                     continue;
                 }
 
-                blockGroups[blockId].push_back(glm::vec3(x, y, z));
+                // Check if block is visible and skip non-visible blocks
+                bool visible = false;
+                if (x == 0 || !isRenderableBlock(region->getBlockAt(x - 1, y, z)))
+                {
+                    visible = true;
+                }
+                else if (x == region->getSizeX() - 1 || !isRenderableBlock(region->getBlockAt(x + 1, y, z)))
+                {
+                    visible = true;
+                }
+                else if (y == 0 || !isRenderableBlock(region->getBlockAt(x, y - 1, z)))
+                {
+                    visible = true;
+                }
+                else if (y == region->getSizeY() - 1 || !isRenderableBlock(region->getBlockAt(x, y + 1, z)))
+                {
+                    visible = true;
+                }
+                else if (z == 0 || !isRenderableBlock(region->getBlockAt(x, y, z - 1)))
+                {
+                    visible = true;
+                }
+                else if (z == region->getSizeZ() - 1 || !isRenderableBlock(region->getBlockAt(x, y, z + 1)))
+                {
+                    visible = true;
+                }
+                
+                if (!visible)
+                {
+                    continue;
+                }
+
+                // Add block to the appropriate group
+                newCache.blockGroups[blockId].push_back(glm::vec3(x, y, z));
             }
         }
     }
 
-    // Now render each block type in a single batch
-    glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
-    glUseProgram(cubeShaderProgram);
+    // Update cache
+    sectionCache[sectionKey] = newCache;
+}
 
-    // Set combined view-projection matrix
-    GLint vpMatrixLoc = glGetUniformLocation(cubeShaderProgram, "viewProjectionMatrix");
-    if (vpMatrixLoc == -1)
-    {
-        std::cerr << "Uniform 'viewProjectionMatrix' not found in shader!" << std::endl;
-    }
-    glUniformMatrix4fv(vpMatrixLoc, 1, GL_FALSE, glm::value_ptr(viewProjectionMatrix));
-
-    // Bind cube VAO
-    glBindVertexArray(cubeVAO);
-
-    // Draw each block type in one batch
+void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &viewProjectionMatrix)
+{
+    const auto &blockGroups = sectionCache[sectionKey].blockGroups;
     for (const auto &[blockId, positions] : blockGroups)
     {
+        // Skip empty groups
+        if (positions.empty())
+        {
+            continue;
+        }
+
         // Set block color
         glm::vec3 color;
         auto it = blockColorDict.find(blockId);
         if (it != blockColorDict.end())
         {
-            color = it->second;
-            color = color / 255.0f;
+            color = it->second / 255.0f;
         }
         else
         {
             color = glm::vec3(0.0f, 0.0f, 0.0f);
         }
-        GLint colorLoc = glGetUniformLocation(cubeShaderProgram, "colorOverride");
-        glUniform3fv(colorLoc, 1, glm::value_ptr(color));
-        glUniform1i(glGetUniformLocation(cubeShaderProgram, "useColorOverride"), 1);
+        glUniform3fv(cubeColorOverrideLoc, 1, glm::value_ptr(color));
+        glUniform1i(cubeUseColorOverrideLoc, 1);
 
-        // Update instance buffer with all positions for this block type
+        // Update instance buffer with positions for this block type
         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
         glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STREAM_DRAW);
 
@@ -646,7 +901,75 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
         GLenum err = glGetError();
         if (err != GL_NO_ERROR)
         {
-            std::cerr << "OpenGL error after drawing: " << err << std::endl;
+            std::cerr << "OpenGL error while rendering block type " << blockId << ": " << err << std::endl;
+        }
+    }
+}
+
+void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance)
+{
+    if (!region)
+    {
+        return;
+    }
+
+    // Get current camera section position
+    glm::ivec3 currentSectionPos(
+        floor(cameraPos.x / 16),
+        floor(cameraPos.y / 16),
+        floor(cameraPos.z / 16));
+
+    // Check if current camera moved to a new section and mark out of range sections as dirty
+    bool cameraMoved = currentSectionPos != lastCameraSectionPos;
+    if (cameraMoved)
+    {
+        for (auto &[key, cache] : sectionCache)
+        {
+            std::stringstream ss(key);
+            int x, y, z;
+            char comma;
+            ss >> x >> comma >> y >> comma >> z;
+
+            bool outOfRange = abs(x - currentSectionPos.x) > sectionViewDistance ||
+                              abs(y - currentSectionPos.y) > sectionViewDistance ||
+                              abs(z - currentSectionPos.z) > sectionViewDistance;
+            if (outOfRange)
+            {
+                cache.dirty = true;
+            }
+        }
+    }
+
+    // Prepare for rendering
+    glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
+    glUseProgram(cubeShaderProgram);
+    glUniformMatrix4fv(cubeVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(viewProjectionMatrix));
+    glUniform3fv(cubeLightDirLoc, 1, glm::value_ptr(lightDirection));
+    glBindVertexArray(cubeVAO);
+
+    int startX = std::max(0, std::min(region->getSizeX() / 16, currentSectionPos.x - sectionViewDistance));
+    int startY = std::max(0, std::min(region->getSizeY() / 16, currentSectionPos.y - sectionViewDistance));
+    int startZ = std::max(0, std::min(region->getSizeZ() / 16, currentSectionPos.z - sectionViewDistance));
+    int endX = std::max(0, std::min(region->getSizeX() / 16, currentSectionPos.x + sectionViewDistance + 1));
+    int endY = std::max(0, std::min(region->getSizeY() / 16, currentSectionPos.y + sectionViewDistance + 1));
+    int endZ = std::max(0, std::min(region->getSizeZ() / 16, currentSectionPos.z + sectionViewDistance + 1));
+
+    for (int sx = startX; sx < endX; sx++)
+    {
+        for (int sy = startY; sy < endY; sy++)
+        {
+            for (int sz = startZ; sz < endZ; sz++)
+            {
+                std::string sectionKey = getSectionKey(sx, sy, sz);
+                // Process section if needed
+                if (sectionCache.find(sectionKey) == sectionCache.end() || sectionCache[sectionKey].dirty)
+                {
+                    processSection(sx, sy, sz, sectionKey);
+                }
+
+                // Render section
+                renderSection(sectionKey, viewProjectionMatrix);
+            }
         }
     }
 
@@ -661,26 +984,28 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
  ****
  ******/
 
-void Renderer::renderFrame(int windowWidth, int windowHeight)
+void Renderer::renderFrame(int windowWidth, int windowHeight, float nearPlane, float farPlane)
 {
     // Clear the screen
     glClearColor(0.82f, 0.882f, 0.933f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // Create matrices
-    glm::mat4 projectionMatrix = glm::perspective(glm::radians(45.0f),
-                                                  (float)windowWidth / (float)windowHeight,
-                                                  0.1f, 100.0f);
-    glm::mat4 viewMatrix = glm::lookAt(cameraPos,
-                                       cameraPos + cameraFront,
-                                       cameraUp);
+    glm::mat4 projectionMatrix = glm::perspective(glm::radians(45.0f), (float)windowWidth / (float)windowHeight, nearPlane, farPlane);
+    glm::mat4 viewMatrix = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
-    if (region)
+    drawAxes(viewMatrix, projectionMatrix, 0.01f);
+
+    if (developerModeActive)
     {
-        drawRegion(viewMatrix, projectionMatrix, 6);
+        drawCurrentSectionBounds(viewMatrix, projectionMatrix);
     }
 
-    drawAxes(viewMatrix, projectionMatrix);
+    // Draw axes
+    if (region)
+    {
+        drawRegion(viewMatrix, projectionMatrix);
+    }
 }
 
 void Renderer::startRenderLoop(Window &window)
@@ -772,6 +1097,22 @@ void Renderer::handleInput(Window &window)
         cameraPos -= cameraUp * distance;
     }
 
+    // Developer mode
+    static bool developerKeyPressed = false;
+    if (window.isKeyPressed(GLFW_KEY_H))
+    {
+        if (!developerKeyPressed)
+        {
+            developerKeyPressed = true;
+            developerModeActive = !developerModeActive;
+            std::cout << "Developer mode: " << (developerModeActive ? "enabled" : "disabled") << std::endl;
+        }
+    }
+    else
+    {
+        developerKeyPressed = false;
+    }
+
     // Exit
     if (window.isKeyPressed(GLFW_KEY_ESCAPE))
     {
@@ -815,6 +1156,7 @@ void Renderer::processMouse(Window &window)
 void Renderer::setRegion(Region *region)
 {
     this->region = region;
+    sectionCache.clear();
 }
 
 void Renderer::setCameraPosition(float x, float y, float z)
