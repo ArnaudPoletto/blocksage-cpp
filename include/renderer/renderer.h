@@ -4,6 +4,7 @@
 #include "window.h"
 #include "region.h"
 #include "input_handler.h"
+#include "shaders_setup.h"
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -34,28 +35,26 @@ public:
     void setRegion(Region *region);
 
 private:
-    // Uniform location cache
-    GLint cubeVPMatrixLoc;
-    GLint cubeColorOverrideLoc;
-    GLint cubeUseColorOverrideLoc;
-    GLint axesMVPMatrixLoc;
-
     // Lighting
-    GLint cubeLightDirLoc;
     GLint cubeViewPosLoc;
     glm::vec3 lightDirection;
 
     // Threading
-    int nThreads;
-    std::condition_variable condition;
+    std::vector<std::thread> threads;
+    std::queue<std::tuple<int, int, int, std::string>> sectionQueue;
     std::mutex queueMutex;
     std::mutex cacheMutex;
-    std::queue<std::tuple<int, int, int, std::string>> sectionQueue;
-    std::vector<std::thread> threads;
+    std::condition_variable condition;
     std::atomic<bool> stopThreads;
+    int maxNThreads;
+    int nThreads;
 
     std::unordered_map<std::string, std::future<void>> pendingProcessing;
     std::mutex pendingMutex;
+
+    void workerFunction();
+    void queueSectionForProcessing(int sx, int sy, int sz, const std::string& sectionKey);
+    bool isSectionReady(const std::string& sectionKey);
 
     // Section cache
     struct SectionCache {
@@ -68,14 +67,13 @@ private:
     std::unordered_map<std::string, SectionCache> sectionCache;
 
     // Shaders
-    GLuint baseShaderProgram;
+    ShadersSetup shadersSetup;
     GLuint axesVAO, axesVBO;
     int axesVertexCount;
 
     GLuint currentSectionBoundsVAO, currentSectionBoundsVBO;
     int currentSectionBoundsVertexCount;
 
-    GLuint cubeShaderProgram;
     GLuint cubeVAO, cubeVBO, cubeEBO;
     GLuint instanceVBO;
     GLuint faceFlagsVBO;
@@ -106,7 +104,7 @@ private:
     void drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix);
     void processSection(int sx, int sy, int sz, const std::string& sectionKey);
     void renderSection(const std::string& sectionKey, const glm::mat4& viewProjectionMatrix);
-    void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 32);
+    void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 6);
 
     // Rendering
     bool isRunning;
@@ -118,11 +116,6 @@ private:
     InputHandler inputHandler;
     void handleInput(Window &window, float deltaTime);
 
-    // Threading
-    void workerFunction();
-    void queueSectionForProcessing(int sx, int sy, int sz, const std::string& sectionKey);
-    bool isSectionReady(const std::string& sectionKey);
-
     // Data
     Region *region;
     std::unordered_map<uint16_t, glm::vec3> blockColorDict;
@@ -133,7 +126,5 @@ private:
     void setLookAtPoint(float x, float y, float z);
 
     // Getters
-    std::string getSectionKey(int x, int y, int z) const {
-        return std::to_string(x) + "," + std::to_string(y) + "," + std::to_string(z);
-    }
+    std::string getSectionKey(int x, int y, int z);
 };

@@ -2,8 +2,9 @@
 #include "window.h"
 #include "region.h"
 #include "config.h"
-#include "shader_sources.h"
+#include "renderer/shader_sources.h"
 #include <iostream>
+#include <thread>
 #include <vector>
 #include <cmath>
 #include <nlohmann/json.hpp>
@@ -27,6 +28,7 @@ const float initialYaw = -90.0f;
 const float initialPitch = 0.0f;
 const float initialDeveloperModeActive = false;
 const glm::vec3 initialLightDirection = glm::vec3(0.2f, 1.0f, 0.7f);
+const int maxNThreads = 8;
 
 Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict, std::vector<uint16_t> noRenderBlockIds)
     : cameraPos(initialCameraPos),
@@ -43,16 +45,18 @@ Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict
       lastFrameTime(0.0f),
       region(nullptr),
       inputHandler(cameraPos, cameraFront, cameraRight, cameraUp, yaw, pitch, isRunning, developerModeActive, [this]()
-                   { this->updateCameraVectors(); })
+                   { this->updateCameraVectors(); }),
+      shadersSetup()
 {
 
     updateCameraVectors();
 
-    nThreads = std::min(8, static_cast<int>(std::thread::hardware_concurrency()));
-    if (nThreads < 1)
+    nThreads = std::thread::hardware_concurrency();
+    if (maxNThreads > 0)
     {
-        nThreads = 1;
+        nThreads = std::min(nThreads, maxNThreads);
     }
+    nThreads = std::max(nThreads, 1);
 
     threads.resize(nThreads);
     for (int i = 0; i < nThreads; ++i)
@@ -65,16 +69,30 @@ Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict
 
 Renderer::~Renderer()
 {
+    // Signal threads to stop
+    stopThreads = true;
+    condition.notify_all();
+
+    // Wait for threads to finish
+    for (auto &thread : threads)
+    {
+        if (thread.joinable())
+        {
+            thread.join();
+        }
+    }
+
+    inputHandler.~InputHandler();
+    shadersSetup.~ShadersSetup();
+
     // Clean up axes
     glDeleteVertexArrays(1, &axesVAO);
     glDeleteBuffers(1, &axesVBO);
-    glDeleteProgram(baseShaderProgram);
 
     // Clean up cube
     glDeleteVertexArrays(1, &cubeVAO);
     glDeleteBuffers(1, &cubeVBO);
     glDeleteBuffers(1, &cubeEBO);
-    glDeleteProgram(cubeShaderProgram);
 }
 
 bool Renderer::initialize()
@@ -88,7 +106,7 @@ bool Renderer::initialize()
 
     glEnable(GL_DEPTH_TEST);
 
-    if (!setupShaders())
+    if (!shadersSetup.initialize())
     {
         std::cerr << "Failed to set up shaders" << std::endl;
         return false;
@@ -109,120 +127,6 @@ bool Renderer::initialize()
     if (!setupCubeGeometry())
     {
         std::cerr << "Failed to set up cube geometry" << std::endl;
-        return false;
-    }
-
-    return true;
-}
-
-/*****
- ****
- *** Shaders
- ****
- ******/
-
-GLuint Renderer::compileShader(GLenum shaderType, const char *source)
-{
-    GLuint shader = glCreateShader(shaderType);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-
-    // Check for compilation errors
-    GLint success;
-    GLchar infoLog[512];
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(shader, 512, NULL, infoLog);
-        std::cerr << "Shader compilation failed: " << infoLog << std::endl;
-        return 0;
-    }
-
-    return shader;
-}
-
-GLuint Renderer::createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource)
-{
-    // Compile vertex shader
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
-    if (vertexShader == 0)
-    {
-        std::cerr << "Failed to compile vertex shader" << std::endl;
-        return 0;
-    }
-
-    // Compile fragment shader
-    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
-    if (fragmentShader == 0)
-    {
-        std::cerr << "Failed to compile fragment shader" << std::endl;
-        glDeleteShader(vertexShader);
-        return 0;
-    }
-
-    // Create shader program
-    GLuint shaderProgram = glCreateProgram();
-    if (shaderProgram == 0)
-    {
-        std::cerr << "Failed to create shader program" << std::endl;
-        glDeleteShader(vertexShader);
-        glDeleteShader(fragmentShader);
-        return 0;
-    }
-
-    // Attach shaders and link program
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-
-    // Check for linking errors
-    GLint success;
-    GLchar infoLog[1024];
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success)
-    {
-        glGetProgramInfoLog(shaderProgram, 1024, NULL, infoLog);
-        std::cerr << "Shader program linking failed: " << infoLog << std::endl;
-        glDeleteShader(vertexShader);
-        glDeleteShader(fragmentShader);
-        glDeleteProgram(shaderProgram);
-        return 0;
-    }
-
-    // Detach and delete shaders after successful linking
-    glDetachShader(shaderProgram, vertexShader);
-    glDetachShader(shaderProgram, fragmentShader);
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    return shaderProgram;
-}
-
-bool Renderer::setupShaders()
-{
-    baseShaderProgram = createShaderProgram(baseVertexShaderSource, axesFragmentShaderSource);
-
-    // Axes shader
-    if (baseShaderProgram == 0)
-    {
-        return false;
-    }
-    axesMVPMatrixLoc = glGetUniformLocation(baseShaderProgram, "mvpMatrix");
-
-    // Cube shader
-    cubeShaderProgram = createShaderProgram(cubeVertexShaderSource, cubeFragmentShaderSource);
-    if (cubeShaderProgram == 0)
-    {
-        return false;
-    }
-
-    cubeVPMatrixLoc = glGetUniformLocation(cubeShaderProgram, "viewProjectionMatrix");
-    cubeColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "colorOverride");
-    cubeUseColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "useColorOverride");
-    cubeLightDirLoc = glGetUniformLocation(cubeShaderProgram, "lightDir");
-    if (cubeVPMatrixLoc == -1 || cubeColorOverrideLoc == -1 || cubeUseColorOverrideLoc == -1 || cubeLightDirLoc == -1)
-    {
-        std::cerr << "Uniforms not found in cube shader program" << std::endl;
         return false;
     }
 
@@ -498,7 +402,7 @@ bool Renderer::setupCubeGeometry()
 
 void Renderer::drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, float delta)
 {
-    glUseProgram(baseShaderProgram);
+    glUseProgram(shadersSetup.baseShaderProgram);
 
     // Create model matrix
     glm::vec3 dPosition = glm::vec3(delta, delta, delta);
@@ -507,7 +411,7 @@ void Renderer::drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projection
 
     // Compute MVP matrix
     glm::mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
-    glUniformMatrix4fv(axesMVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
+    glUniformMatrix4fv(shadersSetup.axesMVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
 
     // Enable line width (if supported by the hardware)
     GLfloat originalLineWidth;
@@ -533,7 +437,7 @@ void Renderer::drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::
         return;
     }
 
-    glUseProgram(baseShaderProgram);
+    glUseProgram(shadersSetup.baseShaderProgram);
 
     // Calculate current section coordinates
     float sx = floor(cameraPos.x / 16) * 16;
@@ -546,7 +450,7 @@ void Renderer::drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::
 
     // Compute MVP matrix
     glm::mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
-    glUniformMatrix4fv(axesMVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
+    glUniformMatrix4fv(shadersSetup.axesMVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(mvpMatrix));
 
     // Enable line width for better visibility
     GLfloat originalLineWidth;
@@ -577,9 +481,7 @@ void Renderer::drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::
 
 void Renderer::processSection(int sx, int sy, int sz, const std::string &sectionKey)
 {
-    // Create new cache entry for this section
-    SectionCache newCache;
-    newCache.dirty = false;
+    std::unordered_map<uint16_t, std::vector<BlockFace>> blockFaces;
 
     auto isRenderableBlock = [this](uint16_t blockId) -> bool
     {
@@ -614,7 +516,6 @@ void Renderer::processSection(int sx, int sy, int sz, const std::string &section
     int sectionEndY = std::min((sy + 1) * 16, region->getSizeY());
     int sectionEndZ = std::min((sz + 1) * 16, region->getSizeZ());
 
-    std::unordered_map<uint16_t, std::vector<BlockFace>> blockFaces;
     for (int x = sectionStartX; x < sectionEndX; x++)
     {
         for (int y = sectionStartY; y < sectionEndY; y++)
@@ -658,9 +559,13 @@ void Renderer::processSection(int sx, int sy, int sz, const std::string &section
         }
     }
 
-    // Update cache
-    newCache.blockFaces = blockFaces;
-    sectionCache[sectionKey] = newCache;
+    // Update section cache under lock
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        sectionCache[sectionKey].blockFaces = std::move(blockFaces);
+        sectionCache[sectionKey].dirty = false;
+        sectionCache[sectionKey].processing = false;
+    }
 }
 
 void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &viewProjectionMatrix)
@@ -685,8 +590,8 @@ void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &vie
         {
             color = glm::vec3(0.0f, 0.0f, 0.0f);
         }
-        glUniform3fv(cubeColorOverrideLoc, 1, glm::value_ptr(color));
-        glUniform1i(cubeUseColorOverrideLoc, 1);
+        glUniform3fv(shadersSetup.cubeColorOverrideLoc, 1, glm::value_ptr(color));
+        glUniform1i(shadersSetup.cubeUseColorOverrideLoc, 1);
 
         // Group faces by face type for efficient rendering
         // Organize positions by face type
@@ -736,6 +641,9 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
     bool cameraMoved = currentSectionPos != lastCameraSectionPos;
     if (cameraMoved)
     {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        lastCameraSectionPos = currentSectionPos;
+
         for (auto &[key, cache] : sectionCache)
         {
             std::stringstream ss(key);
@@ -753,13 +661,7 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
         }
     }
 
-    // Prepare for rendering
-    glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
-    glUseProgram(cubeShaderProgram);
-    glUniformMatrix4fv(cubeVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(viewProjectionMatrix));
-    glUniform3fv(cubeLightDirLoc, 1, glm::value_ptr(lightDirection));
-    glBindVertexArray(cubeVAO);
-
+    // Calculate visible section range
     int startX = std::max(0, std::min(region->getSizeX() / SECTION_SIZE, currentSectionPos.x - sectionViewDistance));
     int startY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y - sectionViewDistance));
     int startZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z - sectionViewDistance));
@@ -767,6 +669,7 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
     int endY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y + sectionViewDistance + 1));
     int endZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z + sectionViewDistance + 1));
 
+    // Queue sections for processing
     for (int sx = startX; sx < endX; sx++)
     {
         for (int sy = startY; sy < endY; sy++)
@@ -774,14 +677,53 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
             for (int sz = startZ; sz < endZ; sz++)
             {
                 std::string sectionKey = getSectionKey(sx, sy, sz);
-                // Process section if needed
-                if (sectionCache.find(sectionKey) == sectionCache.end() || sectionCache[sectionKey].dirty)
+                
+                bool needsProcessing = false;
                 {
-                    processSection(sx, sy, sz, sectionKey);
+                    std::lock_guard<std::mutex> lock(cacheMutex);
+                    needsProcessing = sectionCache.find(sectionKey) == sectionCache.end() || 
+                                     sectionCache[sectionKey].dirty;
                 }
+                
+                if (needsProcessing)
+                {
+                    // Check if this section is already being processed
+                    bool alreadyProcessing = false;
+                    {
+                        std::lock_guard<std::mutex> lock(cacheMutex);
+                        if (sectionCache.find(sectionKey) != sectionCache.end()) {
+                            alreadyProcessing = sectionCache[sectionKey].processing;
+                        }
+                    }
+                    
+                    if (!alreadyProcessing) {
+                        queueSectionForProcessing(sx, sy, sz, sectionKey);
+                    }
+                }
+            }
+        }
+    }
 
-                // Render section
-                renderSection(sectionKey, viewProjectionMatrix);
+    // Prepare for rendering
+    glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
+    glUseProgram(shadersSetup.cubeShaderProgram);
+    glUniformMatrix4fv(shadersSetup.cubeVPMatrixLoc, 1, GL_FALSE, glm::value_ptr(viewProjectionMatrix));
+    glUniform3fv(shadersSetup.cubeLightDirLoc, 1, glm::value_ptr(lightDirection));
+    glBindVertexArray(cubeVAO);
+
+    // Only render sections that are ready
+    for (int sx = startX; sx < endX; sx++)
+    {
+        for (int sy = startY; sy < endY; sy++)
+        {
+            for (int sz = startZ; sz < endZ; sz++)
+            {
+                std::string sectionKey = getSectionKey(sx, sy, sz);
+                
+                if (isSectionReady(sectionKey))
+                {
+                    renderSection(sectionKey, viewProjectionMatrix);
+                }
             }
         }
     }
@@ -897,15 +839,79 @@ void Renderer::setLookAtPoint(float x, float y, float z)
     updateCameraVectors();
 }
 
+/*****
+ ****
+ *** Getters
+ ****
+ ******/
+
+std::string Renderer::getSectionKey(int x, int y, int z)
+{
+    std::stringstream ss;
+    ss << x << "," << y << "," << z;
+    return ss.str();
+}
+
 void Renderer::workerFunction()
 {
+    while (!stopThreads) {
+        std::tuple<int, int, int, std::string> task;
+
+        // Wait for a task to be available
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            condition.wait(lock, [this] { return !sectionQueue.empty() || stopThreads; });
+            if (stopThreads) {
+                return;
+            }
+
+            task = sectionQueue.front();
+            sectionQueue.pop();
+        }
+
+        // Process the task
+        int sx = std::get<0>(task);
+        int sy = std::get<1>(task);
+        int sz = std::get<2>(task);
+        std::string sectionKey = std::get<3>(task);
+        processSection(sx, sy, sz, sectionKey);
+
+        // Notify that the section is ready
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            condition.notify_all();
+        }
+
+    }
 }
 
 void Renderer::queueSectionForProcessing(int sx, int sy, int sz, const std::string &sectionKey)
 {
+    // Mark the section as being processed
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (sectionCache.find(sectionKey) == sectionCache.end()) {
+            sectionCache[sectionKey] = SectionCache();
+        }
+        sectionCache[sectionKey].processing = true;
+    }
+
+    // Add to queue
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        sectionQueue.push(std::make_tuple(sx, sy, sz, sectionKey));
+    }
+
+    // Notify a worker
+    condition.notify_one();
 }
 
-bool Renderer::isSectionReady(const std::string &sectionKey)
-{
-    return false;
+bool Renderer::isSectionReady(const std::string& sectionKey) {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    
+    if (sectionCache.find(sectionKey) == sectionCache.end()) {
+        return false;
+    }
+    
+    return !sectionCache[sectionKey].processing && !sectionCache[sectionKey].dirty;
 }

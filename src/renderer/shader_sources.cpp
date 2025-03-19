@@ -1,4 +1,6 @@
-const char *baseVertexShaderSource = R"(
+#include "renderer/shader_sources.h"
+
+const char* const baseVertexShaderSource = R"(
     #version 460 core
     layout (location = 0) in vec3 aPos;
     layout (location = 1) in vec3 aColor;
@@ -13,7 +15,7 @@ const char *baseVertexShaderSource = R"(
     }
     )";
 
-const char *axesFragmentShaderSource = R"(
+const char* const axesFragmentShaderSource = R"(
     #version 460 core
     in vec3 vertexColor;
     out vec4 FragColor;
@@ -23,7 +25,7 @@ const char *axesFragmentShaderSource = R"(
     }
     )";
 
-const char *cubeVertexShaderSource = R"(
+const char* const cubeVertexShaderSource = R"(
     #version 460 core
     layout (location = 0) in vec3 aPos;
     layout (location = 1) in vec3 aColor;
@@ -51,7 +53,7 @@ const char *cubeVertexShaderSource = R"(
     }
     )";
 
-const char *cubeFragmentShaderSource = R"(
+const char* const cubeFragmentShaderSource = R"(
     #version 460 core
     in vec3 vertexColor;
     in vec3 fragNormal;   // Receive normal from vertex shader
