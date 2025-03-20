@@ -41,6 +41,9 @@ Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict
       blockColorDict(blockColorDict),
       noRenderBlockIds(noRenderBlockIds),
       stopThreads(false),
+      stopDiscoveryThread(false),
+      needsDiscoveryUpdate(false),
+      pendingSectionViewDistance(32),
       isRunning(true),
       lastFrameTime(0.0f),
       region(nullptr),
@@ -64,6 +67,8 @@ Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict
         threads[i] = std::thread(&Renderer::workerFunction, this);
     }
 
+    startSectionDiscovery();
+
     std::cout << "Started " << nThreads << " worker threads for section processing" << std::endl;
 }
 
@@ -72,6 +77,8 @@ Renderer::~Renderer()
     // Signal threads to stop
     stopThreads = true;
     condition.notify_all();
+    stopDiscoveryThread = true;
+    discoveryCondition.notify_all();
 
     // Wait for threads to finish
     for (auto &thread : threads)
@@ -80,6 +87,10 @@ Renderer::~Renderer()
         {
             thread.join();
         }
+    }
+    if (sectionDiscoveryThread.joinable())
+    {
+        sectionDiscoveryThread.join();
     }
 
     inputHandler.~InputHandler();
@@ -568,44 +579,84 @@ void Renderer::processSection(int sx, int sy, int sz, const std::string &section
     }
 }
 
-void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &viewProjectionMatrix)
+// void Renderer::renderSection(const std::string &sectionKey, const glm::mat4 &viewProjectionMatrix)
+// {
+//     const auto &blockFaces = sectionCache[sectionKey].blockFaces;
+//     for (const auto &[blockId, faces] : blockFaces)
+//     {
+//         // Skip empty groups
+//         if (faces.empty())
+//         {
+//             continue;
+//         }
+
+//         // Set block color
+//         glm::vec3 color;
+//         auto it = blockColorDict.find(blockId);
+//         if (it != blockColorDict.end())
+//         {
+//             color = it->second / 255.0f;
+//         }
+//         else
+//         {
+//             color = glm::vec3(0.0f, 0.0f, 0.0f);
+//         }
+//         glUniform3fv(shadersSetup.cubeColorOverrideLoc, 1, glm::value_ptr(color));
+//         glUniform1i(shadersSetup.cubeUseColorOverrideLoc, 1);
+
+//         // Group faces by face type for efficient rendering
+//         // Organize positions by face type
+//         std::unordered_map<uint8_t, std::vector<glm::vec3>> facePositions;
+//         for (const auto &face : faces)
+//         {
+//             facePositions[face.face].push_back(face.position);
+//         }
+
+//         // Render each face type separately
+//         for (const auto &[faceType, positions] : facePositions)
+//         {
+//             if (positions.empty())
+//                 continue;
+
+//             // Update instance buffer with positions for this face type
+//             glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+//             glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STREAM_DRAW);
+
+//             // Draw only the specific face using the face indices
+//             glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, (void *)(faceType * 6 * sizeof(unsigned int)), positions.size());
+//         }
+
+//         // Check for errors
+//         GLenum err = glGetError();
+//         if (err != GL_NO_ERROR)
+//         {
+//             std::cerr << "OpenGL error while rendering block type " << blockId << ": " << err << std::endl;
+//         }
+//     }
+// }
+
+void Renderer::renderAllSections(
+    std::unordered_map<uint8_t, std::unordered_map<uint8_t, std::vector<glm::vec3>>> allBlockPositions,
+    std::unordered_map<uint8_t, glm::vec3> allBlockColors)
 {
-    const auto &blockFaces = sectionCache[sectionKey].blockFaces;
-    for (const auto &[blockId, faces] : blockFaces)
+    for (const auto &[blockId, facesPositions] : allBlockPositions)
     {
-        // Skip empty groups
-        if (faces.empty())
+        if (facesPositions.empty())
         {
             continue;
         }
 
         // Set block color
-        glm::vec3 color;
-        auto it = blockColorDict.find(blockId);
-        if (it != blockColorDict.end())
-        {
-            color = it->second / 255.0f;
-        }
-        else
-        {
-            color = glm::vec3(0.0f, 0.0f, 0.0f);
-        }
+        glm::vec3 color = allBlockColors[blockId];
         glUniform3fv(shadersSetup.cubeColorOverrideLoc, 1, glm::value_ptr(color));
         glUniform1i(shadersSetup.cubeUseColorOverrideLoc, 1);
 
-        // Group faces by face type for efficient rendering
-        // Organize positions by face type
-        std::unordered_map<uint8_t, std::vector<glm::vec3>> facePositions;
-        for (const auto &face : faces)
-        {
-            facePositions[face.face].push_back(face.position);
-        }
-
-        // Render each face type separately
-        for (const auto &[faceType, positions] : facePositions)
+        for (const auto &[faceType, positions] : facesPositions)
         {
             if (positions.empty())
+            {
                 continue;
+            }
 
             // Update instance buffer with positions for this face type
             glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
@@ -641,24 +692,8 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
     bool cameraMoved = currentSectionPos != lastCameraSectionPos;
     if (cameraMoved)
     {
-        std::lock_guard<std::mutex> lock(cacheMutex);
         lastCameraSectionPos = currentSectionPos;
-
-        for (auto &[key, cache] : sectionCache)
-        {
-            std::stringstream ss(key);
-            int x, y, z;
-            char comma;
-            ss >> x >> comma >> y >> comma >> z;
-
-            bool outOfRange = abs(x - currentSectionPos.x) > sectionViewDistance ||
-                              abs(y - currentSectionPos.y) > sectionViewDistance ||
-                              abs(z - currentSectionPos.z) > sectionViewDistance;
-            if (outOfRange)
-            {
-                cache.dirty = true;
-            }
-        }
+        triggerSectionDiscoveryUpdate(currentSectionPos, sectionViewDistance);
     }
 
     // Calculate visible section range
@@ -669,41 +704,6 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
     int endY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y + sectionViewDistance + 1));
     int endZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z + sectionViewDistance + 1));
 
-    // Queue sections for processing
-    for (int sx = startX; sx < endX; sx++)
-    {
-        for (int sy = startY; sy < endY; sy++)
-        {
-            for (int sz = startZ; sz < endZ; sz++)
-            {
-                std::string sectionKey = getSectionKey(sx, sy, sz);
-                
-                bool needsProcessing = false;
-                {
-                    std::lock_guard<std::mutex> lock(cacheMutex);
-                    needsProcessing = sectionCache.find(sectionKey) == sectionCache.end() || 
-                                     sectionCache[sectionKey].dirty;
-                }
-                
-                if (needsProcessing)
-                {
-                    // Check if this section is already being processed
-                    bool alreadyProcessing = false;
-                    {
-                        std::lock_guard<std::mutex> lock(cacheMutex);
-                        if (sectionCache.find(sectionKey) != sectionCache.end()) {
-                            alreadyProcessing = sectionCache[sectionKey].processing;
-                        }
-                    }
-                    
-                    if (!alreadyProcessing) {
-                        queueSectionForProcessing(sx, sy, sz, sectionKey);
-                    }
-                }
-            }
-        }
-    }
-
     // Prepare for rendering
     glm::mat4 viewProjectionMatrix = projectionMatrix * viewMatrix;
     glUseProgram(shadersSetup.cubeShaderProgram);
@@ -712,6 +712,9 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
     glBindVertexArray(cubeVAO);
 
     // Only render sections that are ready
+    auto start2 = std::chrono::high_resolution_clock::now();
+    std::unordered_map<uint8_t, std::unordered_map<uint8_t, std::vector<glm::vec3>>> allBlockPositions;
+    std::unordered_map<uint8_t, glm::vec3> allBlockColors;
     for (int sx = startX; sx < endX; sx++)
     {
         for (int sy = startY; sy < endY; sy++)
@@ -719,14 +722,49 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
             for (int sz = startZ; sz < endZ; sz++)
             {
                 std::string sectionKey = getSectionKey(sx, sy, sz);
-                
-                if (isSectionReady(sectionKey))
+
+                if (!isSectionReady(sectionKey))
                 {
-                    renderSection(sectionKey, viewProjectionMatrix);
+                    continue;
+                }
+
+                const auto &blockFaces = sectionCache[sectionKey].blockFaces;
+                for (const auto &[blockId, faces] : blockFaces)
+                {
+                    // Skip empty groups
+                    if (faces.empty())
+                    {
+                        continue;
+                    }
+
+                    // Get color
+                    glm::vec3 color;
+                    auto it = blockColorDict.find(blockId);
+                    if (it != blockColorDict.end())
+                    {
+                        color = it->second / 255.0f;
+                    }
+                    else
+                    {
+                        color = glm::vec3(0.0f, 0.0f, 0.0f);
+                    }
+
+                    // Store data
+                    allBlockColors[blockId] = color;
+                    for (const auto &face : faces)
+                    {
+                        allBlockPositions[blockId][face.face].push_back(face.position);
+                    }
                 }
             }
         }
     }
+    
+    renderAllSections(allBlockPositions, allBlockColors);
+
+    auto end2 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<float, std::milli> duration2 = end2 - start2;
+    std::cout << "\tSection rendering time: " << duration2.count() << " ms" << std::endl;
 
     // Cleanup
     glBindVertexArray(0);
@@ -757,10 +795,14 @@ void Renderer::renderFrame(int windowWidth, int windowHeight, float nearPlane, f
     }
 
     // Draw axes
+    auto start = std::chrono::high_resolution_clock::now();
     if (region)
     {
         drawRegion(viewMatrix, projectionMatrix);
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<float, std::milli> duration = end - start;
+    std::cout << "Render time: " << duration.count() << " ms" << std::endl;
 }
 
 void Renderer::startRenderLoop(Window &window)
@@ -854,14 +896,17 @@ std::string Renderer::getSectionKey(int x, int y, int z)
 
 void Renderer::workerFunction()
 {
-    while (!stopThreads) {
+    while (!stopThreads)
+    {
         std::tuple<int, int, int, std::string> task;
 
         // Wait for a task to be available
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            condition.wait(lock, [this] { return !sectionQueue.empty() || stopThreads; });
-            if (stopThreads) {
+            condition.wait(lock, [this]
+                           { return !sectionQueue.empty() || stopThreads; });
+            if (stopThreads)
+            {
                 return;
             }
 
@@ -881,7 +926,6 @@ void Renderer::workerFunction()
             std::lock_guard<std::mutex> lock(queueMutex);
             condition.notify_all();
         }
-
     }
 }
 
@@ -890,7 +934,8 @@ void Renderer::queueSectionForProcessing(int sx, int sy, int sz, const std::stri
     // Mark the section as being processed
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
-        if (sectionCache.find(sectionKey) == sectionCache.end()) {
+        if (sectionCache.find(sectionKey) == sectionCache.end())
+        {
             sectionCache[sectionKey] = SectionCache();
         }
         sectionCache[sectionKey].processing = true;
@@ -906,12 +951,121 @@ void Renderer::queueSectionForProcessing(int sx, int sy, int sz, const std::stri
     condition.notify_one();
 }
 
-bool Renderer::isSectionReady(const std::string& sectionKey) {
+bool Renderer::isSectionReady(const std::string &sectionKey)
+{
     std::lock_guard<std::mutex> lock(cacheMutex);
-    
-    if (sectionCache.find(sectionKey) == sectionCache.end()) {
+
+    if (sectionCache.find(sectionKey) == sectionCache.end())
+    {
         return false;
     }
-    
+
     return !sectionCache[sectionKey].processing && !sectionCache[sectionKey].dirty;
+}
+
+void Renderer::startSectionDiscovery()
+{
+    sectionDiscoveryThread = std::thread(&Renderer::sectionDiscoveryFunction, this);
+}
+
+void Renderer::triggerSectionDiscoveryUpdate(const glm::ivec3& currentSectionPos, int sectionViewDistance)
+{
+    {
+        std::lock_guard<std::mutex> lock(discoveryMutex);
+        pendingSectionPos = currentSectionPos;
+        pendingSectionViewDistance = sectionViewDistance;
+        needsDiscoveryUpdate = true;
+    }
+    discoveryCondition.notify_one();
+}
+
+void Renderer::sectionDiscoveryFunction()
+{
+    while (!stopDiscoveryThread)
+    {
+        glm::ivec3 currentSectionPos;
+        int sectionViewDistance;
+        bool shouldProcess = false;
+        
+        // Wait for a signal to discover sections
+        {
+            std::unique_lock<std::mutex> lock(discoveryMutex);
+            discoveryCondition.wait(lock, [this] {
+                return needsDiscoveryUpdate || stopDiscoveryThread;
+            });
+            
+            if (stopDiscoveryThread)
+            {
+                return;
+            }
+            
+            currentSectionPos = pendingSectionPos;
+            sectionViewDistance = pendingSectionViewDistance;
+            needsDiscoveryUpdate = false;
+            shouldProcess = true;
+        }
+        
+        if (shouldProcess && region)
+        {
+            // Mark out of range sections as dirty
+            {
+                std::lock_guard<std::mutex> lock(cacheMutex);
+                
+                for (auto &[key, cache] : sectionCache)
+                {
+                    std::stringstream ss(key);
+                    int x, y, z;
+                    char comma;
+                    ss >> x >> comma >> y >> comma >> z;
+
+                    bool outOfRange = abs(x - currentSectionPos.x) > sectionViewDistance ||
+                                    abs(y - currentSectionPos.y) > sectionViewDistance ||
+                                    abs(z - currentSectionPos.z) > sectionViewDistance;
+                    if (outOfRange)
+                    {
+                        cache.dirty = true;
+                    }
+                }
+            }
+
+            // Calculate visible section range
+            int startX = std::max(0, std::min(region->getSizeX() / SECTION_SIZE, currentSectionPos.x - sectionViewDistance));
+            int startY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y - sectionViewDistance));
+            int startZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z - sectionViewDistance));
+            int endX = std::max(0, std::min(region->getSizeX() / SECTION_SIZE, currentSectionPos.x + sectionViewDistance + 1));
+            int endY = std::max(0, std::min(region->getSizeY() / SECTION_SIZE, currentSectionPos.y + sectionViewDistance + 1));
+            int endZ = std::max(0, std::min(region->getSizeZ() / SECTION_SIZE, currentSectionPos.z + sectionViewDistance + 1));
+
+            // Queue sections for processing
+            for (int sx = startX; sx < endX; sx++)
+            {
+                for (int sy = startY; sy < endY; sy++)
+                {
+                    for (int sz = startZ; sz < endZ; sz++)
+                    {
+                        std::string sectionKey = getSectionKey(sx, sy, sz);
+
+                        bool needsProcessing = false;
+                        bool alreadyProcessing = false;
+                        
+                        {
+                            std::lock_guard<std::mutex> lock(cacheMutex);
+                            needsProcessing = sectionCache.find(sectionKey) == sectionCache.end() ||
+                                             sectionCache[sectionKey].dirty;
+                                             
+                            if (needsProcessing && sectionCache.find(sectionKey) != sectionCache.end())
+                            {
+                                alreadyProcessing = sectionCache[sectionKey].processing;
+                            }
+                        }
+
+                        if (needsProcessing && !alreadyProcessing)
+                        {
+                            queueSectionForProcessing(sx, sy, sz, sectionKey);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

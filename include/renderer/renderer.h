@@ -56,6 +56,18 @@ private:
     void queueSectionForProcessing(int sx, int sy, int sz, const std::string& sectionKey);
     bool isSectionReady(const std::string& sectionKey);
 
+    std::thread sectionDiscoveryThread;
+    std::atomic<bool> stopDiscoveryThread;
+    std::mutex discoveryMutex;
+    std::condition_variable discoveryCondition;
+    std::atomic<bool> needsDiscoveryUpdate;
+    glm::vec3 pendingSectionPos;
+    int pendingSectionViewDistance;
+
+    void sectionDiscoveryFunction();
+    void startSectionDiscovery();
+    void triggerSectionDiscoveryUpdate(const glm::ivec3& currentSectionPos, int sectionViewDistance);
+
     // Section cache
     struct SectionCache {
         std::unordered_map<uint16_t, std::vector<BlockFace>> blockFaces;
@@ -104,6 +116,7 @@ private:
     void drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix);
     void processSection(int sx, int sy, int sz, const std::string& sectionKey);
     void renderSection(const std::string& sectionKey, const glm::mat4& viewProjectionMatrix);
+    void renderAllSections(std::unordered_map<uint8_t, std::unordered_map<uint8_t, std::vector<glm::vec3>>> allBlockPositions, std::unordered_map<uint8_t, glm::vec3> allBlockColors);
     void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 6);
 
     // Rendering
