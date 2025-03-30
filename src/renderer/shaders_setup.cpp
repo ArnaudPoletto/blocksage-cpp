@@ -1,8 +1,8 @@
-#include "renderer/shaders_setup.h"
+#include "renderer/shader_setup.h"
 #include "renderer/shader_sources.h"
 #include <iostream>
 
-ShadersSetup::ShadersSetup()
+ShaderSetup::ShaderSetup()
     : baseShaderProgram(NULL),
       cubeShaderProgram(NULL),
       axesMVPMatrixLoc(NULL),
@@ -13,7 +13,7 @@ ShadersSetup::ShadersSetup()
 {
 }
 
-ShadersSetup::~ShadersSetup()
+ShaderSetup::~ShaderSetup()
 {
     // Clean up axes
     glDeleteProgram(baseShaderProgram);
@@ -22,7 +22,40 @@ ShadersSetup::~ShadersSetup()
     glDeleteProgram(cubeShaderProgram);
 }
 
-GLuint ShadersSetup::compileShader(GLenum shaderType, const char *source)
+bool ShaderSetup::initialize()
+{
+    baseShaderProgram = createShaderProgram(baseVertexShaderSource, axesFragmentShaderSource);
+
+    // Axes shader
+    if (baseShaderProgram == 0)
+    {
+        std::cerr << "Failed to create base shader program" << std::endl;
+        return false;
+    }
+    axesMVPMatrixLoc = glGetUniformLocation(baseShaderProgram, "mvpMatrix");
+
+    // Cube shader
+    cubeShaderProgram = createShaderProgram(cubeVertexShaderSource, cubeFragmentShaderSource);
+    if (cubeShaderProgram == 0)
+    {
+        std::cerr << "Failed to create cube shader program" << std::endl;
+        return false;
+    }
+
+    cubeVPMatrixLoc = glGetUniformLocation(cubeShaderProgram, "viewProjectionMatrix");
+    cubeColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "colorOverride");
+    cubeUseColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "useColorOverride");
+    cubeLightDirLoc = glGetUniformLocation(cubeShaderProgram, "lightDir");
+    if (cubeVPMatrixLoc == -1 || cubeColorOverrideLoc == -1 || cubeUseColorOverrideLoc == -1 || cubeLightDirLoc == -1)
+    {
+        std::cerr << "Uniforms not found in cube shader program" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+GLuint ShaderSetup::compileShader(GLenum shaderType, const char *source)
 {
     GLuint shader = glCreateShader(shaderType);
     glShaderSource(shader, 1, &source, NULL);
@@ -42,7 +75,7 @@ GLuint ShadersSetup::compileShader(GLenum shaderType, const char *source)
     return shader;
 }
 
-GLuint ShadersSetup::createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource)
+GLuint ShaderSetup::createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource)
 {
     // Compile vertex shader
     GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
@@ -97,37 +130,4 @@ GLuint ShadersSetup::createShaderProgram(const char *vertexShaderSource, const c
     glDeleteShader(fragmentShader);
 
     return shaderProgram;
-}
-
-bool ShadersSetup::initialize()
-{
-    baseShaderProgram = createShaderProgram(baseVertexShaderSource, axesFragmentShaderSource);
-
-    // Axes shader
-    if (baseShaderProgram == 0)
-    {
-        std::cerr << "Failed to create base shader program" << std::endl;
-        return false;
-    }
-    axesMVPMatrixLoc = glGetUniformLocation(baseShaderProgram, "mvpMatrix");
-
-    // Cube shader
-    cubeShaderProgram = createShaderProgram(cubeVertexShaderSource, cubeFragmentShaderSource);
-    if (cubeShaderProgram == 0)
-    {
-        std::cerr << "Failed to create cube shader program" << std::endl;
-        return false;
-    }
-
-    cubeVPMatrixLoc = glGetUniformLocation(cubeShaderProgram, "viewProjectionMatrix");
-    cubeColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "colorOverride");
-    cubeUseColorOverrideLoc = glGetUniformLocation(cubeShaderProgram, "useColorOverride");
-    cubeLightDirLoc = glGetUniformLocation(cubeShaderProgram, "lightDir");
-    if (cubeVPMatrixLoc == -1 || cubeColorOverrideLoc == -1 || cubeUseColorOverrideLoc == -1 || cubeLightDirLoc == -1)
-    {
-        std::cerr << "Uniforms not found in cube shader program" << std::endl;
-        return false;
-    }
-
-    return true;
 }

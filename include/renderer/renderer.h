@@ -4,7 +4,8 @@
 #include "window.h"
 #include "region.h"
 #include "input_handler.h"
-#include "shaders_setup.h"
+#include "shader_setup.h"
+#include "geometry_setup.h"
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -36,7 +37,6 @@ public:
 
 private:
     // Lighting
-    GLint cubeViewPosLoc;
     glm::vec3 lightDirection;
 
     // Threading
@@ -79,26 +79,8 @@ private:
     std::unordered_map<std::string, SectionCache> sectionCache;
 
     // Shaders
-    ShadersSetup shadersSetup;
-    GLuint axesVAO, axesVBO;
-    int axesVertexCount;
-
-    GLuint currentSectionBoundsVAO, currentSectionBoundsVBO;
-    int currentSectionBoundsVertexCount;
-
-    GLuint cubeVAO, cubeVBO, cubeEBO;
-    GLuint instanceVBO;
-    GLuint faceFlagsVBO;
-    int cubeVertexCount;
-
-    std::vector<unsigned int> cubeFaceIndices[6];
-
-    GLuint compileShader(GLenum type, const char *source);
-    GLuint createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource);
-    bool setupShaders();
-    bool setupAxesGeometry();
-    bool setupCurrentSectionBoundsGeometry();
-    bool setupCubeGeometry();
+    ShaderSetup shaderSetup;
+    GeometrySetup geometrySetup;
 
     // Camera and movement
     glm::vec3 cameraPos;
@@ -117,7 +99,7 @@ private:
     void processSection(int sx, int sy, int sz, const std::string& sectionKey);
     void renderSection(const std::string& sectionKey, const glm::mat4& viewProjectionMatrix);
     void renderAllSections(std::unordered_map<uint8_t, std::unordered_map<uint8_t, std::vector<glm::vec3>>> allBlockPositions, std::unordered_map<uint8_t, glm::vec3> allBlockColors);
-    void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 6);
+    void drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, int sectionViewDistance = 32);
 
     // Rendering
     bool isRunning;
@@ -127,7 +109,6 @@ private:
 
     // Input
     InputHandler inputHandler;
-    void handleInput(Window &window, float deltaTime);
 
     // Data
     Region *region;

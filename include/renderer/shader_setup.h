@@ -2,11 +2,11 @@
 
 #include "opengl_headers.h"
 
-class ShadersSetup
+class ShaderSetup
 {
 public:
-    ShadersSetup();
-    ~ShadersSetup();
+    ShaderSetup();
+    ~ShaderSetup();
     bool initialize();
 
     GLuint baseShaderProgram;
@@ -18,7 +18,6 @@ public:
     GLint cubeUseColorOverrideLoc;
     GLint cubeLightDirLoc;
 private:
-
     GLuint createShaderProgram(const char *vertexShaderSource, const char *fragmentShaderSource);
     GLuint compileShader(GLenum shaderType, const char *source);
 };

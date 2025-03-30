@@ -91,7 +91,7 @@ void InputHandler::processKeyboard(Window &window, float deltaTime)
 
     // Developer mode
     static bool developerKeyPressed = false;
-    if (window.isKeyPressed(GLFW_KEY_H))
+    if (window.isKeyPressed(GLFW_KEY_G))
     {
         if (!developerKeyPressed)
         {
