@@ -20,22 +20,12 @@
  ****
  ******/
 
-const glm::vec3 initialCameraPos = glm::vec3(0.0f, 0.0f, 0.0f);
-const glm::vec3 initialCameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-const glm::vec3 initialCameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-const float initialYaw = -90.0f;
-const float initialPitch = 0.0f;
 const float initialDeveloperModeActive = false;
 const glm::vec3 initialLightDirection = glm::vec3(0.2f, 1.0f, 0.7f);
 const int maxNThreads = 8;
 
 Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict, std::vector<uint16_t> noRenderBlockIds)
-    : cameraPos(initialCameraPos),
-      cameraFront(initialCameraFront),
-      cameraUp(initialCameraUp),
-      yaw(initialYaw),
-      pitch(initialPitch),
-      developerModeActive(initialDeveloperModeActive),
+    : developerModeActive(initialDeveloperModeActive),
       lightDirection(glm::normalize(initialLightDirection)),
       blockColorDict(blockColorDict),
       noRenderBlockIds(noRenderBlockIds),
@@ -46,13 +36,11 @@ Renderer::Renderer(const std::unordered_map<uint16_t, glm::vec3> &blockColorDict
       isRunning(true),
       lastFrameTime(0.0f),
       region(nullptr),
-      inputHandler(cameraPos, cameraFront, cameraRight, cameraUp, yaw, pitch, isRunning, developerModeActive, [this]()
-                   { this->updateCameraVectors(); }),
+      camera(),
+      inputHandler(camera, isRunning, developerModeActive),
       shaderSetup(),
       geometrySetup()
 {
-
-    updateCameraVectors();
 
     nThreads = std::thread::hardware_concurrency();
     if (maxNThreads > 0)
@@ -168,9 +156,9 @@ void Renderer::drawCurrentSectionBounds(const glm::mat4 &viewMatrix, const glm::
     glUseProgram(shaderSetup.baseShaderProgram);
 
     // Calculate current section coordinates
-    float sx = floor(cameraPos.x / 16) * 16;
-    float sy = floor(cameraPos.y / 16) * 16;
-    float sz = floor(cameraPos.z / 16) * 16;
+    float sx = floor(camera.position.x / 16) * 16;
+    float sy = floor(camera.position.y / 16) * 16;
+    float sz = floor(camera.position.z / 16) * 16;
 
     // Create model matrix to position the section bounds
     glm::mat4 modelMatrix = glm::mat4(1.0f);
@@ -345,9 +333,9 @@ void Renderer::drawRegion(const glm::mat4 &viewMatrix, const glm::mat4 &projecti
 
     // Get current camera section position
     glm::ivec3 currentSectionPos(
-        floor(cameraPos.x / SECTION_SIZE),
-        floor(cameraPos.y / SECTION_SIZE),
-        floor(cameraPos.z / SECTION_SIZE));
+        floor(camera.position.x / SECTION_SIZE),
+        floor(camera.position.y / SECTION_SIZE),
+        floor(camera.position.z / SECTION_SIZE));
 
     // Check if current camera moved to a new section and mark out of range sections as dirty
     bool cameraMoved = currentSectionPos != lastCameraSectionPos;
@@ -441,7 +429,7 @@ void Renderer::renderFrame(int windowWidth, int windowHeight, float nearPlane, f
 
     // Create matrices
     glm::mat4 projectionMatrix = glm::perspective(glm::radians(45.0f), (float)windowWidth / (float)windowHeight, nearPlane, farPlane);
-    glm::mat4 viewMatrix = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+    glm::mat4 viewMatrix = glm::lookAt(camera.position, camera.position + camera.front, camera.up);
 
     drawAxes(viewMatrix, projectionMatrix, 0.01f);
 
@@ -484,26 +472,6 @@ void Renderer::startRenderLoop(Window &window)
 
 /*****
  ****
- *** Camera
- ****
- ******/
-
-void Renderer::updateCameraVectors()
-{
-    // Calculate new front vector from yaw and pitch
-    glm::vec3 front;
-    front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-    front.y = sin(glm::radians(pitch));
-    front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-    cameraFront = glm::normalize(front);
-
-    // Recalculate right and up vectors
-    cameraRight = glm::normalize(glm::cross(cameraFront, glm::vec3(0.0f, 1.0f, 0.0f)));
-    cameraUp = glm::normalize(glm::cross(cameraRight, cameraFront));
-}
-
-/*****
- ****
  *** Setters
  ****
  ******/
@@ -512,18 +480,6 @@ void Renderer::setRegion(Region *region)
 {
     this->region = region;
     sectionCache.clear();
-}
-
-void Renderer::setCameraPosition(float x, float y, float z)
-{
-    cameraPos = glm::vec3(x, y, z);
-}
-
-void Renderer::setLookAtPoint(float x, float y, float z)
-{
-    glm::vec3 lookAt(x, y, z);
-    cameraFront = glm::normalize(lookAt - cameraPos);
-    updateCameraVectors();
 }
 
 /*****

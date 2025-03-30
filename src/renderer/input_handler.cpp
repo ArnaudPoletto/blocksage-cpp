@@ -5,24 +5,12 @@ const float initialMoveSpeedIncreaseFactor = 5.0f;
 const float initialMouseSensitivity = 0.1f;
 
 InputHandler::InputHandler(
-    glm::vec3 &cameraPos,
-    glm::vec3 &cameraFront,
-    glm::vec3 &cameraRight,
-    glm::vec3 &cameraUp,
-    float &yaw,
-    float &pitch,
+    Camera &camera,
     bool &isRunning,
-    bool &developerModeActive,
-    std::function<void()> updateCameraVectorsCallback)
-    : cameraPos(cameraPos),
-      cameraFront(cameraFront),
-      cameraRight(cameraRight),
-      cameraUp(cameraUp),
-      yaw(yaw),
-      pitch(pitch),
+    bool &developerModeActive)
+    : camera(camera),
       isRunning(isRunning),
       developerModeActive(developerModeActive),
-      updateCameraVectorsCallback(updateCameraVectorsCallback),
       moveSpeed(initialMoveSpeed),
       moveSpeedIncreaseFactor(initialMoveSpeedIncreaseFactor),
       mouseSensitivity(initialMouseSensitivity),
@@ -35,8 +23,8 @@ InputHandler::~InputHandler() {}
 void InputHandler::handleInput(Window &window, float deltaTime)
 {
     processKeyboard(window, deltaTime);
-    processMouse(window, yaw, pitch);
-    updateCameraVectorsCallback();
+    processMouse(window, camera.yaw, camera.pitch);
+    camera.updateCameraVectors();
 }
 
 void InputHandler::processKeyboard(Window &window, float deltaTime)
@@ -52,45 +40,36 @@ void InputHandler::processKeyboard(Window &window, float deltaTime)
     // Forward/backward movement
     if (window.isKeyPressed(GLFW_KEY_W))
     {
-        double dx = cameraFront.x * distance;
-        double dz = cameraFront.z * distance;
-        cameraPos += glm::vec3(dx, 0.0f, dz);
+        camera.position += camera.front * distance * glm::vec3(1.0f, 0.0f, 1.0f);
     }
     if (window.isKeyPressed(GLFW_KEY_S))
     {
-        double dx = cameraFront.x * distance;
-        double dz = cameraFront.z * distance;
-        cameraPos -= glm::vec3(dx, 0.0f, dz);
+        camera.position -= camera.front * distance * glm::vec3(1.0f, 0.0f, 1.0f);
     }
 
     // Left/right movement
     if (window.isKeyPressed(GLFW_KEY_A))
     {
-        double dx = cameraRight.x * distance;
-        double dz = cameraRight.z * distance;
-        cameraPos -= glm::vec3(dx, 0.0f, dz);
+        camera.position -= camera.right * distance * glm::vec3(1.0f, 0.0f, 1.0f);
     }
     if (window.isKeyPressed(GLFW_KEY_D))
     {
-        double dx = cameraRight.x * distance;
-        double dz = cameraRight.z * distance;
-        cameraPos += glm::vec3(dx, 0.0f, dz);
+        camera.position += camera.right * distance * glm::vec3(1.0f, 0.0f, 1.0f);
     }
 
     // Up/down movement
     if (window.isKeyPressed(GLFW_KEY_SPACE))
     {
         double dy = distance;
-        cameraPos += glm::vec3(0.0f, dy, 0.0f);
+        camera.position += glm::vec3(0.0f, dy, 0.0f);
     }
     if (window.isKeyPressed(GLFW_KEY_Q))
     {
         double dy = distance;
-        cameraPos -= glm::vec3(0.0f, dy, 0.0f);
+        camera.position -= glm::vec3(0.0f, dy, 0.0f);
     }
 
     // Developer mode
-    static bool developerKeyPressed = false;
     if (window.isKeyPressed(GLFW_KEY_G))
     {
         if (!developerKeyPressed)

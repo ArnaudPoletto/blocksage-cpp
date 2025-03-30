@@ -3,6 +3,7 @@
 #include "opengl_headers.h"
 #include "window.h"
 #include "region.h"
+#include "camera.h"
 #include "input_handler.h"
 #include "shader_setup.h"
 #include "geometry_setup.h"
@@ -36,7 +37,16 @@ public:
     void setRegion(Region *region);
 
 private:
-    // Lighting
+    Camera camera;
+    InputHandler inputHandler;
+    ShaderSetup shaderSetup;
+    GeometrySetup geometrySetup;
+
+    // Data
+    Region *region;
+    std::unordered_map<uint16_t, glm::vec3> blockColorDict;
+    std::vector<uint16_t> noRenderBlockIds;
+
     glm::vec3 lightDirection;
 
     // Threading
@@ -78,20 +88,8 @@ private:
     };
     std::unordered_map<std::string, SectionCache> sectionCache;
 
-    // Shaders
-    ShaderSetup shaderSetup;
-    GeometrySetup geometrySetup;
-
     // Camera and movement
-    glm::vec3 cameraPos;
-    glm::vec3 cameraFront;
-    glm::vec3 cameraUp;
-    glm::vec3 cameraRight;
-    float yaw;
-    float pitch;
     glm::ivec3 lastCameraSectionPos;
-
-    void updateCameraVectors();
 
     // Drawing
     void drawAxes(const glm::mat4 &viewMatrix, const glm::mat4 &projectionMatrix, float delta = 0.001f);
@@ -106,18 +104,6 @@ private:
     bool developerModeActive;
     float lastFrameTime;
     void renderFrame(int windowWidth, int windowHeight, float nearPlane = 0.1f, float farPlane = 5000.0f);
-
-    // Input
-    InputHandler inputHandler;
-
-    // Data
-    Region *region;
-    std::unordered_map<uint16_t, glm::vec3> blockColorDict;
-    std::vector<uint16_t> noRenderBlockIds;
-
-    // Setters
-    void setCameraPosition(float x, float y, float z);
-    void setLookAtPoint(float x, float y, float z);
 
     // Getters
     std::string getSectionKey(int x, int y, int z);
